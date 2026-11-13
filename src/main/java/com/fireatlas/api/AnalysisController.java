@@ -1,5 +1,7 @@
 package com.fireatlas.api;
 
+import com.fireatlas.domain.H3Index;
+import com.fireatlas.domain.Region;
 import com.fireatlas.query.Anomaly;
 import com.fireatlas.query.DetectionRepository;
 import io.swagger.v3.oas.annotations.Operation;
@@ -41,26 +43,30 @@ public class AnalysisController {
     @Operation(summary = "Comparacao por sensor: deteccoes, FRP, confianca (sem comparacao ingenua de contagens)")
     @GetMapping("/compare")
     public ResponseEntity<Dto.CompareResponse> compare(
-            @RequestParam String bbox,
+            @RequestParam(required = false) String bbox,
+            @RequestParam(required = false) String cells,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
             @RequestParam(defaultValue = "BOTH") String sensor) {
-        QueryParams q = QueryParams.of(bbox, start, end, sensor, maxDaysCompare);
-        List<Dto.SensorStats> stats = repo.sensorStats(q.bbox(), q.start(), q.end(), q.sensors());
+        QueryParams q = QueryParams.of(bbox, cells, start, end, sensor, maxDaysCompare);
+        List<Dto.SensorStats> stats = repo.sensorStats(q.region(), q.start(), q.end(), q.sensors());
         String msg = stats.isEmpty() ? "Nenhum foco de calor encontrado para os filtros selecionados." : null;
-        return DetectionController.cached(new Dto.CompareResponse(q.bbox().toString(), q.start(), q.end(),
+        return DetectionController.cached(new Dto.CompareResponse(q.region().describe(), q.start(), q.end(),
                 stats, COMPARE_NOTICE, msg), q.end());
     }
 
-    @Operation(summary = "Serie temporal diaria com sinalizacao de atividade incomum (z-score robusto, mediana/MAD)")
+    @Operation(summary = "Serie temporal diaria com sinalizacao de atividade incomum (z-score robusto, mediana/MAD)",
+            description = "Contagens diarias vem das celulas H3 que cobrem a regiao.")
     @GetMapping("/timeseries")
     public ResponseEntity<Dto.TimeseriesResponse> timeseries(
-            @RequestParam String bbox,
+            @RequestParam(required = false) String bbox,
+            @RequestParam(required = false) String cells,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
             @RequestParam(defaultValue = "BOTH") String sensor) {
-        QueryParams q = QueryParams.of(bbox, start, end, sensor, 3700);
-        List<DetectionRepository.DayRow> rows = repo.dailyTotals(q.bbox(), q.start(), q.end(), q.sensors());
+        QueryParams q = QueryParams.of(bbox, cells, start, end, sensor, 3700);
+        Region.Cover cover = q.region().coverFitting(H3Index.BASE_RES, DetectionController.MAX_AGG_CELLS);
+        List<DetectionRepository.DayRow> rows = repo.dailyTotals(cover, q.start(), q.end(), q.sensors());
 
         // Serie completa por sensor (dias sem foco = 0), para a mediana nao ficar enviesada.
         List<Dto.TimeseriesPoint> out = new ArrayList<>();
@@ -80,20 +86,21 @@ public class AnalysisController {
         boolean any = out.stream().anyMatch(p -> p.count() > 0);
         return DetectionController.cached(new Dto.TimeseriesResponse(
                 "z-score robusto (mediana/MAD) sobre contagens diarias do proprio periodo; "
-                        + "sem baseline sazonal (limitacao)", Anomaly.THRESHOLD, out,
+                        + "sem baseline sazonal (limitacao)", Anomaly.THRESHOLD, cover.res(), out,
                 any ? null : "Nenhum foco de calor encontrado para os filtros selecionados."), q.end());
     }
 
     @Operation(summary = "Harmonizacao MODIS x VIIRS (pareamento espaco-temporal, metodo v0)")
     @GetMapping("/harmonized")
     public ResponseEntity<Dto.HarmonizationResponse> harmonized(
-            @RequestParam String bbox,
+            @RequestParam(required = false) String bbox,
+            @RequestParam(required = false) String cells,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
             @RequestParam(defaultValue = "750") int maxDistanceMeters,
             @RequestParam(defaultValue = "180") int maxMinutes,
             @RequestParam(defaultValue = "20000") int modisSampleCap) {
-        QueryParams q = QueryParams.of(bbox, start, end, "BOTH", maxDaysHarmonize);
+        QueryParams q = QueryParams.of(bbox, cells, start, end, "BOTH", maxDaysHarmonize);
         if (maxDistanceMeters < 100 || maxDistanceMeters > 5000) {
             throw new IllegalArgumentException("maxDistanceMeters deve estar entre 100 e 5000");
         }
@@ -103,7 +110,7 @@ public class AnalysisController {
         if (modisSampleCap < 100 || modisSampleCap > 100_000) {
             throw new IllegalArgumentException("modisSampleCap deve estar entre 100 e 100000");
         }
-        Dto.HarmonizationResponse.Result r = repo.harmonize(q.bbox(), q.start(), q.end(),
+        Dto.HarmonizationResponse.Result r = repo.harmonize(q.region(), q.start(), q.end(),
                 maxDistanceMeters, maxMinutes, modisSampleCap);
         Dto.HarmonizationResponse.Method method = new Dto.HarmonizationResponse.Method(
                 "Pareamento espaco-temporal MODIS->VIIRS (v0)",
@@ -117,7 +124,7 @@ public class AnalysisController {
                         "Nuvens, angulo de varredura e area do pixel afetam a deteccao nos dois sensores.",
                         "Amostra limitada a modisSampleCap deteccoes MODIS (campo sampled)."));
         String msg = r.modisEvaluated() == 0 ? "Nenhum foco MODIS encontrado para os filtros selecionados." : null;
-        return DetectionController.cached(new Dto.HarmonizationResponse(q.bbox().toString(), q.start(), q.end(),
+        return DetectionController.cached(new Dto.HarmonizationResponse(q.region().describe(), q.start(), q.end(),
                 new Dto.HarmonizationResponse.Params(maxDistanceMeters, maxMinutes, modisSampleCap), r, method, msg),
                 q.end());
     }

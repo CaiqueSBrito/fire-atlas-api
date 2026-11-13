@@ -1,7 +1,9 @@
 package com.fireatlas;
 
 import com.fireatlas.domain.BBox;
+import com.fireatlas.domain.H3Index;
 import com.fireatlas.ingestion.DetectionCsvLoader;
+import com.fireatlas.ingestion.H3Aggregates;
 import com.fireatlas.ingestion.DetectionRowParser;
 import com.fireatlas.query.HarmonizationRunStore;
 import org.junit.jupiter.api.AfterAll;
@@ -129,7 +131,9 @@ class AcceptanceTest {
                 MODIS_ROW.replace("2026-09-02", "2026-13-45"),      // data invalida
                 MODIS_ROW.replace(",1805,", ",2575,"),              // hora invalida
                 MODIS_ROW.replace(",Aqua,", ",,"),                  // satelite ausente
-                MODIS_ROW.replace(",25.5,D", ",-3,D"));             // FRP negativo
+                MODIS_ROW.replace(",25.5,D", ",-3,D"),              // FRP negativo
+                // invalida, mas fora da regiao pedida: ignorada, nao conta como rejeicao
+                MODIS_ROW.replace("-10.5,-55.5", "-30.0,-40.0").replace(",25.5,D", ",-3,D"));
         assertEquals(0, s.kept());
         assertEquals(5, s.rejected());
         assertEquals(Map.of(
@@ -171,5 +175,63 @@ class AcceptanceTest {
         assertTrue(ex.getMessage().contains("imutavel"), ex.getMessage());
         assertEquals(25.5f, jdbc.queryForObject(
                 "SELECT frp FROM detection WHERE sensor = 'MODIS'", Float.class), 1e-6);
+    }
+
+    @Test
+    @Order(5)
+    void h3_indice_por_deteccao_agregacao_e_regiao_por_celulas() throws Exception {
+        // Cada deteccao guarda o indice H3 (res 8) calculado a partir de lat/lon.
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT lat, lon, h3 FROM detection WHERE source_file IN ('it/modis.csv', 'it/viirs.csv')");
+        assertEquals(2, rows.size());
+        for (Map<String, Object> r : rows) {
+            long expected = H3Index.cell(((Number) r.get("lat")).doubleValue(), ((Number) r.get("lon")).doubleValue());
+            assertEquals(expected, ((Number) r.get("h3")).longValue());
+        }
+
+        // A formula SQL do ancestral (bits) coincide com a biblioteca H3 em todas as resolucoes agregadas.
+        long h3 = jdbc.queryForObject("SELECT h3 FROM detection WHERE source_file = 'it/modis.csv'", Long.class);
+        for (int res : H3Index.AGG_RESOLUTIONS) {
+            Long viaSql = jdbc.queryForObject(
+                    "SELECT " + H3Index.parentSql("h3", res) + " FROM detection WHERE source_file = 'it/modis.csv'",
+                    Long.class);
+            assertEquals(H3Index.parent(h3, res), viaSql, "ancestral em SQL difere na resolucao " + res);
+        }
+
+        // Agregacao diaria por celula H3.
+        try (Connection c = dataSource.getConnection()) {
+            H3Aggregates.refresh(c, LocalDate.of(2026, 9, 2), LocalDate.of(2026, 9, 2));
+        }
+        assertEquals(H3Index.AGG_RESOLUTIONS.length, jdbc.queryForObject(
+                "SELECT count(DISTINCT res) FROM daily_h3", Integer.class));
+
+        // Regiao informada por celulas H3 (resolucao 4): mapa agregado em celulas H3 de resolucao 6.
+        String r4 = H3Index.toHex(H3Index.parent(H3Index.cell(-10.5, -55.5), 4));
+        mvc.perform(get("/api/v1/detections").param("cells", r4)
+                        .param("start", "2026-09-02").param("end", "2026-09-02").param("zoom", "6"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("grid"))
+                .andExpect(jsonPath("$.resolution").value(6))
+                .andExpect(jsonPath("$.count").value(2))
+                .andExpect(jsonPath("$.cells[0].h3").isString());
+
+        // Pontos individuais com regiao por celulas (usa o indice h3 de deteccoes).
+        mvc.perform(get("/api/v1/detections").param("cells", r4)
+                        .param("start", "2026-09-02").param("end", "2026-09-02").param("zoom", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("points"))
+                .andExpect(jsonPath("$.count").value(2));
+
+        // Calendario por bbox, convertido em celulas H3.
+        mvc.perform(get("/api/v1/calendar").param("bbox", "-56,-11,-55,-10").param("month", "2026-09"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.daysWithFire").value(1));
+
+        // bbox e cells juntos, ou nenhum, sao erro de validacao.
+        mvc.perform(get("/api/v1/detections").param("bbox", "-56,-11,-55,-10").param("cells", r4)
+                        .param("start", "2026-09-02").param("end", "2026-09-02"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/detections").param("start", "2026-09-02").param("end", "2026-09-02"))
+                .andExpect(status().isBadRequest());
     }
 }

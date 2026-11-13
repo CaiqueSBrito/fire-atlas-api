@@ -7,8 +7,8 @@ API (Spring Boot) de focos de calor **MODIS e VIIRS** para o NASA Space Apps 202
 Data lake (S3, bronze/raw CSV da FIRMS)
         │  ingestao filtrada por regiao + periodo (profile "ingest")
         ▼
-PostgreSQL + PostGIS  ── detection (particionada por ano, GiST + BRIN)
-        │               ├─ daily_grid (grade 0,1°/dia pre-agregada)
+PostgreSQL + PostGIS  ── detection (particionada por ano; GiST, BRIN e indice H3 res 8)
+        │               ├─ daily_h3 (agregacao diaria por celula H3, resolucoes 3 a 8)
         │               ├─ ingestion_log (proveniencia)
         ▼               └─ user_preference (perfil anonimo via cookie)
 API REST (/api/v1) ──► Frontend Next.js
@@ -45,21 +45,21 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest \
 
 | Metodo | Rota | O que faz |
 |---|---|---|
-| GET | `/detections?bbox&start&end&sensor&zoom` | Pontos (zoom ≥ 9) ou celulas agregadas (zoom < 9) |
-| GET | `/calendar?bbox&month=YYYY-MM&sensor` | Total por dia/sensor (alimenta as "cartas") |
-| GET | `/compare?bbox&start&end&sensor` | Estatisticas por sensor + aviso de nao comparabilidade |
-| GET | `/timeseries?bbox&start&end&sensor` | Serie diaria e dias de atividade incomum |
-| GET | `/harmonized?bbox&start&end` | Harmonizacao MODIS×VIIRS (ver `docs/HARMONIZACAO.md`) |
+| GET | `/detections` (`bbox` ou `cells`, `start`, `end`, `sensor`, `zoom`) | Pontos (zoom ≥ 9) ou celulas H3 agregadas (zoom < 9) |
+| GET | `/calendar` (`bbox` ou `cells`, `month=YYYY-MM`, `sensor`) | Total por dia/sensor (alimenta as "cartas") |
+| GET | `/compare` (`bbox` ou `cells`, `start`, `end`, `sensor`) | Estatisticas por sensor + aviso de nao comparabilidade |
+| GET | `/timeseries` (`bbox` ou `cells`, `start`, `end`, `sensor`) | Serie diaria e dias de atividade incomum |
+| GET | `/harmonized` (`bbox` ou `cells`, `start`, `end`) | Harmonizacao MODIS×VIIRS (ver `docs/HARMONIZACAO.md`) |
 | GET/PUT | `/preferences` | Regiao favorita do usuario anonimo (cookie `fa_uid`) |
 | GET | `/meta/sources`, `/meta/coverage` | Rastreabilidade e cobertura |
 
-`bbox` = `minLon,minLat,maxLon,maxLat`. `sensor` = `MODIS | VIIRS | BOTH`. Sem resultados, a resposta traz `message`.
+Região: informe **`bbox`** (`minLon,minLat,maxLon,maxLat`) **ou `cells`** (índices H3 em hexadecimal, separados por vírgula, resolução até 8), nunca os dois. `sensor` = `MODIS | VIIRS | BOTH`. Sem resultados, a resposta traz `message`.
 Erros de validacao retornam `400` (RFC 7807).
 
 ## Performance
 
 - Tabela particionada por ano + indice GiST (geometria) + BRIN (data): toda consulta usa bbox + datas.
-- Zoom afastado e calendario leem `daily_grid` (pre-agregada), nunca as deteccoes brutas.
+- Zoom afastado, calendario e serie leem `daily_h3` (pre-agregada por celula H3), nunca as deteccoes brutas.
 - Payload limitado (5000 pontos / 20000 celulas, com flag `truncated`), gzip e `Cache-Control`.
 
 ## Cookies / perfil anonimo
@@ -89,13 +89,13 @@ Credenciais AWS **não** são variáveis do projeto: vêm do perfil local (`aws 
 | Pacote | Responsabilidade |
 |---|---|
 | `ingestion` | Integração com o data lake: leitura do CSV, validação (RN03), carga em lote |
-| `domain` | Tipos de domínio puros (`BBox`, grade geográfica) |
+| `domain` | Tipos de domínio puros (`BBox`, `Region`, indexacao `H3Index`) |
 | `query` | Persistência e consultas ao PostGIS; análises (z-score robusto); gravação de resultados derivados |
 | `api` | Controllers REST, DTOs, validação de parâmetros e tratamento de erros |
 | `config` | CORS e configuração web |
 
 O modelo de dados está em `src/main/resources/db/migration` (Flyway): `detection` (medições originais com sensor,
-satélite, instrumento, localização e origem), `daily_grid` (agregação), `ingestion_log` (metadados/proveniência da carga),
+satélite, instrumento, localização e origem), `daily_h3` (agregação por célula H3), `ingestion_log` (metadados/proveniência da carga),
 `harmonization_run` (resultados derivados) e `user_preference`.
 
 ## Integridade, proveniência e dados originais (RN03–RN05)
@@ -119,3 +119,30 @@ só para o log, sem URL, usuário ou senha de conexão. Erros inesperados respon
 docker compose up -d   # os testes de aceite usam o PostGIS (em schema temporário, removido ao final)
 mvn test               # 8 unitários + 4 de aceite (CA01 a CA04); sem o banco, os de aceite são pulados
 ```
+
+## H3 (indexação geográfica)
+
+Usamos [H3](https://h3geo.org/) onde ele agrega valor e PostGIS onde ele é mais preciso.
+
+| Onde | Como |
+|---|---|
+| Cada detecção | guarda o índice H3 na **resolução 8** (aresta ~460 m, compatível com o pixel VIIRS de 375 m), calculado na ingestão |
+| Mapa afastado (`zoom` < 9) | devolve **células H3** (`h3` em hexadecimal, `resolution`, centro `lat/lon`); resolução 3 a 7 conforme o zoom |
+| Calendário e série temporal | somam as células H3 que cobrem a região, em `daily_h3` |
+| Região de consulta | `bbox` (convertido em células) **ou** `cells` (índices H3) |
+| Perfil (`/preferences`) | aceita `cells` além de `bbox` |
+| **Não** usa H3 | filtro exato de pontos por `bbox` (índice GiST) e a distância em metros da harmonização (PostGIS) |
+
+- As resoluções 3 a 7 são ancestrais do índice da resolução 8; a tabela `daily_h3` é montada com operações de bits em SQL
+  (`H3Index.parentSql`), testadas contra a biblioteca H3.
+- Em consultas agregadas, uma região dada por `bbox` vira as células cujo **centro** cai dentro dela, então focos nas bordas
+  podem ficar de fora (ex.: Brasil inteiro no zoom 4: 130.090 de 130.198). Pontos individuais por `bbox` são exatos.
+- Limites: até 2000 células em `cells`; a cobertura é reduzida de resolução automaticamente até caber (20 mil células no
+  mapa, 5 mil em calendário/série); o campo `resolution` da resposta informa a resolução usada.
+- **Recarga necessária** ao atualizar de uma versão sem H3: rode a ingestão de novo (ela é idempotente por arquivo e período).
+
+## Qualidade dos dados observada
+
+A FIRMS publica algumas detecções VIIRS com **FRP negativo** (ex.: −0,66, −1), que a validação rejeita (`frp_invalido`).
+Só são contadas como rejeição as linhas dentro da região e do período pedidos. Se a equipe preferir manter essas detecções
+com FRP ausente, é uma decisão a tomar (ver `DetectionRowParser`).

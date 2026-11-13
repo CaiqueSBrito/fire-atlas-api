@@ -1,5 +1,7 @@
 package com.fireatlas.ingestion;
 
+import com.fireatlas.domain.H3Index;
+
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
@@ -53,6 +55,22 @@ public final class DetectionRowParser {
         this.sensor = sensor;
         this.product = product;
         this.sourceFile = sourceFile;
+    }
+
+    /**
+     * Data e coordenadas da linha, se forem validas (senao null). Permite ao carregador ignorar linhas
+     * invalidas que estao fora do recorte pedido, sem contá-las como rejeicoes.
+     */
+    public Row peekLocation(String line) {
+        String[] f = line.split(",", -1);
+        try {
+            double lat = Double.parseDouble(get(f, "latitude"));
+            double lon = Double.parseDouble(get(f, "longitude"));
+            if (!(lat >= -90 && lat <= 90) || !(lon >= -180 && lon <= 180)) return null;
+            return new Row(LocalDate.parse(get(f, "acq_date")), lat, lon, null);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     public Result parse(String line) {
@@ -126,7 +144,8 @@ public final class DetectionRowParser {
                 .append(get(f, "daynight")).append(',')
                 .append(get(f, "version")).append(',')
                 .append(product).append(',')
-                .append(sourceFile);
+                .append(sourceFile).append(',')
+                .append(H3Index.cell(lat, lon));
         return Result.ok(new Row(date, lat, lon, sb.toString()));
     }
 

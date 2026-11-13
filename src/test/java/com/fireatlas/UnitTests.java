@@ -2,7 +2,8 @@ package com.fireatlas;
 
 import com.fireatlas.api.QueryParams;
 import com.fireatlas.domain.BBox;
-import com.fireatlas.domain.GridMath;
+import com.fireatlas.domain.H3Index;
+import com.fireatlas.domain.Region;
 import com.fireatlas.ingestion.DetectionRowParser;
 import com.fireatlas.query.Anomaly;
 import org.junit.jupiter.api.Test;
@@ -26,7 +27,8 @@ class UnitTests {
         assertTrue(res.accepted());
         assertEquals(LocalDate.of(2026, 8, 1), res.row().date());
         assertEquals(
-                "VIIRS,SNPP,2026-08-01,2026-08-01T00:01:00Z,-33.99026,22.43891,305.28,281.04,0.49,0.4,1.44,n,n,N,2.0NRT,VIIRS_S-NPP,bronze/raw/x.csv",
+                "VIIRS,SNPP,2026-08-01,2026-08-01T00:01:00Z,-33.99026,22.43891,305.28,281.04,0.49,0.4,1.44,n,n,N,2.0NRT,VIIRS_S-NPP,bronze/raw/x.csv,"
+                        + H3Index.cell(-33.99026, 22.43891),
                 res.row().csvLine());
     }
 
@@ -75,16 +77,61 @@ class UnitTests {
     }
 
     @Test
-    void gridCellsAndBlocks() {
-        assertEquals(0, GridMath.cx(-180));
-        assertEquals(3599, GridMath.cx(180));
-        assertEquals(1800 - 1, GridMath.cy(90));
-        assertEquals(900, GridMath.cy(0));
-        assertEquals(0.05, GridMath.centerLon(1800, 1), 1e-9);
-        assertEquals(0.05, GridMath.centerLat(900, 1), 1e-9);
-        assertEquals(20, GridMath.blockFactor(2));
-        assertEquals(1, GridMath.blockFactor(8));
-        assertEquals(0.2, GridMath.cellSizeDeg(2), 1e-9);
+    void h3AncestorByBitsMatchesLibrary() {
+        double[][] points = {{-10.5, -55.5}, {0, 0}, {-33.99, 22.44}, {67.78, 101.81}, {-89.9, 179.9},
+                {89.9, -179.9}, {-3.1, -60.0}, {35.68, 139.69}};
+        for (double[] p : points) {
+            long base = H3Index.cell(p[0], p[1]);
+            assertEquals(H3Index.BASE_RES, H3Index.resolution(base));
+            for (int res : H3Index.AGG_RESOLUTIONS) {
+                assertEquals(H3Index.parent(base, res), H3Index.parentBits(base, res),
+                        "ancestral por bits difere da biblioteca na resolucao " + res);
+                assertEquals(res, H3Index.resolution(H3Index.parentBits(base, res)));
+            }
+        }
+    }
+
+    @Test
+    void h3HexRoundTripAndValidation() {
+        long c = H3Index.cell(-10.5, -55.5, 6);
+        assertEquals(c, H3Index.fromHex(H3Index.toHex(c)));
+        assertThrows(IllegalArgumentException.class, () -> H3Index.fromHex("nao-e-h3"));
+        assertThrows(IllegalArgumentException.class, () -> H3Index.fromHex("ffffffffffffffff"));
+        double[] ctr = H3Index.center(c);
+        assertEquals(c, H3Index.cell(ctr[0], ctr[1], 6));
+    }
+
+    @Test
+    void h3ZoomMappingAndCover() {
+        assertEquals(3, H3Index.resolutionForZoom(2));
+        assertEquals(4, H3Index.resolutionForZoom(4));
+        assertEquals(6, H3Index.resolutionForZoom(7));
+        assertEquals(7, H3Index.resolutionForZoom(8));
+        var b = new BBox(-56, -11, -55, -10);
+        assertFalse(H3Index.cover(b, 6).isEmpty());
+        assertTrue(H3Index.estimateCover(b, 8) > H3Index.estimateCover(b, 6));
+        // bbox menor que uma celula ainda devolve a celula do centro
+        assertEquals(1, H3Index.cover(new BBox(-55.5001, -10.5001, -55.5, -10.5), 3).size());
+    }
+
+    @Test
+    void regionValidationAndAdaptiveCover() {
+        assertTrue(Region.of("-56,-11,-55,-10", null).isBBox());
+        assertThrows(IllegalArgumentException.class, () -> Region.of(null, null));
+        assertThrows(IllegalArgumentException.class, () -> Region.of("-56,-11,-55,-10", "8a2a1072b59ffff"));
+        String cell4 = H3Index.toHex(H3Index.cell(-10.5, -55.5, 4));
+        Region byCells = Region.of(null, cell4);
+        assertFalse(byCells.isBBox());
+        // resolucao fina maior que a base e rejeitada
+        assertThrows(IllegalArgumentException.class,
+                () -> Region.of(null, H3Index.toHex(H3Index.cell(-10.5, -55.5, 10))));
+        // regiao continental desce de resolucao ate caber no limite de celulas
+        var brazil = Region.of("-74,-34,-34,6", null);
+        var cover = brazil.coverFitting(H3Index.BASE_RES, 5000);
+        assertTrue(cover.res() < H3Index.BASE_RES);
+        assertTrue(cover.cells().size() <= 5000);
+        // celulas: filhas na resolucao pedida
+        assertEquals(49, byCells.coverFitting(6, 20000).cells().size());
     }
 
     @Test
@@ -99,14 +146,14 @@ class UnitTests {
     @Test
     void queryParamsValidation() {
         var d1 = LocalDate.of(2024, 1, 1);
-        var q = QueryParams.of("-74,-34,-34,6", d1, d1.plusDays(9), "both", 31);
+        var q = QueryParams.of("-74,-34,-34,6", null,d1, d1.plusDays(9), "both", 31);
         assertEquals(2, q.sensors().size());
         assertThrows(IllegalArgumentException.class,
-                () -> QueryParams.of("-74,-34,-34,6", d1, d1.minusDays(1), "BOTH", 31));
+                () -> QueryParams.of("-74,-34,-34,6", null,d1, d1.minusDays(1), "BOTH", 31));
         assertThrows(IllegalArgumentException.class,
-                () -> QueryParams.of("-74,-34,-34,6", d1, d1.plusDays(100), "BOTH", 31));
+                () -> QueryParams.of("-74,-34,-34,6", null,d1, d1.plusDays(100), "BOTH", 31));
         assertThrows(IllegalArgumentException.class,
-                () -> QueryParams.of("-74,-34,-34,6", d1, d1, "LANDSAT", 31));
+                () -> QueryParams.of("-74,-34,-34,6", null,d1, d1, "LANDSAT", 31));
     }
 
     @Test

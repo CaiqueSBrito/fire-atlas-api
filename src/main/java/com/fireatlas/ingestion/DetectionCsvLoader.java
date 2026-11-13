@@ -17,7 +17,7 @@ public class DetectionCsvLoader {
 
     private static final String COPY_SQL = "COPY detection (sensor, satellite, acq_date, acq_ts, lat, lon, "
             + "brightness, bright_t31, scan, track, frp, confidence_raw, confidence_class, daynight, version, "
-            + "source_product, source_file) FROM STDIN WITH (FORMAT csv, NULL '')";
+            + "source_product, source_file, h3) FROM STDIN WITH (FORMAT csv, NULL '')";
 
     /** Quantas linhas seguidas depois do fim do periodo antes de assumir que o arquivo (ordenado) acabou. */
     private static final long EARLY_STOP_AFTER = 600_000;
@@ -50,6 +50,21 @@ public class DetectionCsvLoader {
                 scanned++;
                 DetectionRowParser.Result res = parser.parse(line);
                 if (!res.accepted()) {
+                    // Linha invalida mas fora da regiao/periodo pedidos: nao e relevante, nao conta como rejeicao.
+                    DetectionRowParser.Row loc = parser.peekLocation(line);
+                    if (loc != null) {
+                        if (loc.date().isAfter(filter.end())) {
+                            if (++pastEnd >= EARLY_STOP_AFTER) {
+                                stoppedEarly = true;
+                                break;
+                            }
+                            continue;
+                        }
+                        pastEnd = 0;
+                        if (loc.date().isBefore(filter.start()) || !filter.bbox().contains(loc.lon(), loc.lat())) {
+                            continue;
+                        }
+                    }
                     rejected++;
                     rejects.merge(res.rejectReason(), 1L, Long::sum);
                     samples.putIfAbsent(res.rejectReason(), line.length() > 200 ? line.substring(0, 200) : line);

@@ -84,6 +84,9 @@ public class PreferenceController {
             com.fireatlas.domain.BBox.parse(p.bbox().get(0) + "," + p.bbox().get(1) + ","
                     + p.bbox().get(2) + "," + p.bbox().get(3));
         }
+        if (p.cells() != null && !p.cells().isEmpty()) {
+            com.fireatlas.domain.Region.of(null, String.join(",", p.cells())); // valida indices H3 e limite
+        }
         if (p.sensor() != null) QueryParams.parseSensors(p.sensor());
         if (p.name() != null && p.name().length() > 100) throw new IllegalArgumentException("name muito longo");
         if (p.zoom() != null && (p.zoom() < 0 || p.zoom() > 22)) throw new IllegalArgumentException("zoom invalido");

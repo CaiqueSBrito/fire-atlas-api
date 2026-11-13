@@ -13,32 +13,35 @@ public final class Dto {
     public record Point(String sensor, String satellite, Instant acquiredAt, double lat, double lon,
                         Float frp, String confidence, String dayNight, Float brightness) {}
 
-    public record Cell(String sensor, double lat, double lon, int count, double frpSum, Float frpMax) {}
+    /** Celula H3 agregada: h3 em hexadecimal, resolution 3..8, lat/lon do centro. */
+    public record Cell(String sensor, String h3, int resolution, double lat, double lon, int count,
+                       double frpSum, Float frpMax) {}
 
-    /** mode = "points" (zoom proximo) ou "grid" (zoom afastado). */
-    public record DetectionsResponse(String mode, int count, boolean truncated, Double cellSizeDeg,
+    /** mode = "points" (zoom proximo) ou "grid" (zoom afastado, celulas H3 na resolucao indicada). */
+    public record DetectionsResponse(String mode, int count, boolean truncated, Integer resolution,
                                      List<Point> points, List<Cell> cells, String message) {}
 
     public record SensorDay(int count, double frpSum) {}
 
     public record CalendarDay(LocalDate date, SensorDay modis, SensorDay viirs) {}
 
-    public record CalendarResponse(String month, int daysWithFire, List<CalendarDay> days, String message) {}
+    public record CalendarResponse(String month, int resolution, int daysWithFire, List<CalendarDay> days,
+                                   String message) {}
 
     public record SensorStats(String sensor, long detections, int daysWithData, Double frpMean, Double frpMedian,
                               Float frpMax, double frpTotal, Map<String, Long> confidence,
                               int nominalResolutionMeters) {}
 
-    public record CompareResponse(String bbox, LocalDate start, LocalDate end, List<SensorStats> sensors,
+    public record CompareResponse(String region, LocalDate start, LocalDate end, List<SensorStats> sensors,
                                   String notice, String message) {}
 
     public record TimeseriesPoint(LocalDate date, String sensor, int count, double frpSum, Double robustZ,
                                   boolean unusual) {}
 
-    public record TimeseriesResponse(String method, double threshold, List<TimeseriesPoint> series,
-                                     String message) {}
+    public record TimeseriesResponse(String method, double threshold, int resolution,
+                                     List<TimeseriesPoint> series, String message) {}
 
-    public record HarmonizationResponse(String bbox, LocalDate start, LocalDate end, Params params,
+    public record HarmonizationResponse(String region, LocalDate start, LocalDate end, Params params,
                                         Result result, Method method, String message) {
         public record Params(int maxDistanceMeters, int maxMinutes, int modisSampleCap) {}
 
@@ -55,5 +58,7 @@ public final class Dto {
 
     public record Coverage(String sensor, LocalDate minDate, LocalDate maxDate, long detections) {}
 
-    public record Preferences(String name, List<Double> bbox, String sensor, Integer zoom, List<Double> center) {}
+    /** Regiao favorita: bbox (minLon,minLat,maxLon,maxLat) e/ou celulas H3 em hexadecimal. */
+    public record Preferences(String name, List<Double> bbox, List<String> cells, String sensor, Integer zoom,
+                              List<Double> center) {}
 }

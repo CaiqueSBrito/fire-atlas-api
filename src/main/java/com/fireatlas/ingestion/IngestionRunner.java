@@ -152,7 +152,7 @@ public class IngestionRunner implements ApplicationRunner {
                 stats.rejectSamples().forEach((reason, sample) ->
                         log.warn("{}: {} linha(s) rejeitada(s) por {} (exemplo: {})", fileName,
                                 stats.rejects().get(reason), reason, sample));
-                if (stats.kept() > 0) refreshGrid(con, stats.minDate(), stats.maxDate());
+                if (stats.kept() > 0) H3Aggregates.refresh(con, stats.minDate(), stats.maxDate());
                 con.commit();
                 log.info("{}: {} linhas lidas, {} carregadas, {} rejeitadas{}", fileName, stats.scanned(),
                         stats.kept(), stats.rejected(), stats.stoppedEarly() ? " (parou apos o periodo)" : "");
@@ -160,29 +160,6 @@ public class IngestionRunner implements ApplicationRunner {
                 con.rollback();
                 throw e;
             }
-        }
-    }
-
-    /** Recalcula a grade diaria a partir das deteccoes no intervalo de datas carregado. */
-    static void refreshGrid(Connection con, LocalDate from, LocalDate to) throws SQLException {
-        try (PreparedStatement del = con.prepareStatement(
-                "DELETE FROM daily_grid WHERE acq_date BETWEEN ? AND ?")) {
-            del.setObject(1, from);
-            del.setObject(2, to);
-            del.executeUpdate();
-        }
-        try (PreparedStatement ins = con.prepareStatement("""
-                INSERT INTO daily_grid (acq_date, sensor, cx, cy, n, frp_sum, frp_max)
-                SELECT acq_date, sensor,
-                       LEAST(floor((lon + 180) * 10)::int, 3599),
-                       LEAST(floor((lat + 90) * 10)::int, 1799),
-                       count(*), coalesce(sum(frp), 0), max(frp)
-                FROM detection
-                WHERE acq_date BETWEEN ? AND ?
-                GROUP BY 1, 2, 3, 4""")) {
-            ins.setObject(1, from);
-            ins.setObject(2, to);
-            ins.executeUpdate();
         }
     }
 

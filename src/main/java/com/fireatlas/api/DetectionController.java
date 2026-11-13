@@ -1,6 +1,7 @@
 package com.fireatlas.api;
 
-import com.fireatlas.domain.GridMath;
+import com.fireatlas.domain.H3Index;
+import com.fireatlas.domain.Region;
 import com.fireatlas.query.DetectionRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -26,7 +27,10 @@ import java.util.TreeMap;
 @RequestMapping("/api/v1")
 public class DetectionController {
 
-    private static final int MAX_CELLS = 20_000;
+    /** Maximo de celulas H3 na cobertura de uma consulta de mapa (limita tamanho da consulta). */
+    static final int MAX_MAP_CELLS = 20_000;
+    /** Maximo de celulas H3 na cobertura de calendario/serie (a regiao e aproximada pelas celulas). */
+    static final int MAX_AGG_CELLS = 5_000;
     private static final String EMPTY = "Nenhum foco de calor encontrado para os filtros selecionados.";
 
     private final DetectionRepository repo;
@@ -42,40 +46,45 @@ public class DetectionController {
     }
 
     @Operation(summary = "Deteccoes por regiao/periodo/sensor",
-            description = "zoom >= 9 devolve pontos individuais (ate o limite); abaixo disso devolve celulas agregadas.")
+            description = "Regiao: bbox OU cells (indices H3 em hexadecimal). zoom >= 9 devolve pontos individuais "
+                    + "(ate o limite); abaixo disso devolve celulas H3 agregadas na resolucao do zoom.")
     @GetMapping("/detections")
     public ResponseEntity<Dto.DetectionsResponse> detections(
-            @Parameter(description = "minLon,minLat,maxLon,maxLat") @RequestParam String bbox,
+            @Parameter(description = "minLon,minLat,maxLon,maxLat (alternativa a cells)")
+            @RequestParam(required = false) String bbox,
+            @Parameter(description = "indices H3 em hexadecimal, separados por virgula (alternativa a bbox)")
+            @RequestParam(required = false) String cells,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
             @Parameter(description = "MODIS | VIIRS | BOTH") @RequestParam(defaultValue = "BOTH") String sensor,
             @RequestParam(defaultValue = "6") int zoom) {
 
-        long maxDays = maxDaysPoints;
-        QueryParams q = QueryParams.of(bbox, start, end, sensor, (int) maxDays);
+        QueryParams q = QueryParams.of(bbox, cells, start, end, sensor, maxDaysPoints);
         Dto.DetectionsResponse body;
-        if (zoom >= GridMath.POINTS_MIN_ZOOM) {
-            List<Dto.Point> pts = repo.points(q.bbox(), q.start(), q.end(), q.sensors(), maxPoints);
+        if (zoom >= H3Index.POINTS_MIN_ZOOM) {
+            List<Dto.Point> pts = repo.points(q.region(), q.start(), q.end(), q.sensors(), maxPoints);
             boolean truncated = pts.size() > maxPoints;
             pts = DetectionRepository.trim(pts, maxPoints);
             body = new Dto.DetectionsResponse("points", pts.size(), truncated, null, pts, null,
                     pts.isEmpty() ? EMPTY : null);
         } else {
-            int k = GridMath.blockFactor(zoom);
-            List<Dto.Cell> cells = repo.cells(q.bbox(), q.start(), q.end(), q.sensors(), k, MAX_CELLS);
-            boolean truncated = cells.size() > MAX_CELLS;
-            cells = DetectionRepository.trim(cells, MAX_CELLS);
-            int total = cells.stream().mapToInt(Dto.Cell::count).sum();
-            body = new Dto.DetectionsResponse("grid", total, truncated, GridMath.cellSizeDeg(k), null, cells,
-                    cells.isEmpty() ? EMPTY : null);
+            Region.Cover cover = q.region().coverFitting(H3Index.resolutionForZoom(zoom), MAX_MAP_CELLS);
+            List<Dto.Cell> list = repo.cells(cover, q.start(), q.end(), q.sensors(), MAX_MAP_CELLS);
+            boolean truncated = list.size() > MAX_MAP_CELLS;
+            list = DetectionRepository.trim(list, MAX_MAP_CELLS);
+            int total = list.stream().mapToInt(Dto.Cell::count).sum();
+            body = new Dto.DetectionsResponse("grid", total, truncated, cover.res(), null, list,
+                    list.isEmpty() ? EMPTY : null);
         }
         return cached(body, q.end());
     }
 
-    @Operation(summary = "Calendario: totais por dia e sensor (alimenta as cartas)")
+    @Operation(summary = "Calendario: totais por dia e sensor (alimenta as cartas)",
+            description = "Os totais vem das celulas H3 que cobrem a regiao (bbox ou cells).")
     @GetMapping("/calendar")
     public ResponseEntity<Dto.CalendarResponse> calendar(
-            @RequestParam String bbox,
+            @RequestParam(required = false) String bbox,
+            @RequestParam(required = false) String cells,
             @Parameter(description = "YYYY-MM") @RequestParam String month,
             @RequestParam(defaultValue = "BOTH") String sensor) {
 
@@ -85,10 +94,11 @@ public class DetectionController {
         } catch (Exception e) {
             throw new IllegalArgumentException("month deve estar no formato YYYY-MM");
         }
-        QueryParams q = QueryParams.of(bbox, ym.atDay(1), ym.atEndOfMonth(), sensor, 31);
+        QueryParams q = QueryParams.of(bbox, cells, ym.atDay(1), ym.atEndOfMonth(), sensor, 31);
+        Region.Cover cover = q.region().coverFitting(H3Index.BASE_RES, MAX_AGG_CELLS);
         Map<LocalDate, int[]> counts = new TreeMap<>();
         Map<LocalDate, double[]> frp = new TreeMap<>();
-        for (DetectionRepository.DayRow r : repo.dailyTotals(q.bbox(), q.start(), q.end(), q.sensors())) {
+        for (DetectionRepository.DayRow r : repo.dailyTotals(cover, q.start(), q.end(), q.sensors())) {
             int idx = "MODIS".equals(r.sensor()) ? 0 : 1;
             counts.computeIfAbsent(r.date(), d -> new int[2])[idx] = r.n();
             frp.computeIfAbsent(r.date(), d -> new double[2])[idx] = r.frpSum();
@@ -100,7 +110,7 @@ public class DetectionController {
             days.add(new Dto.CalendarDay(d, new Dto.SensorDay(c[0], f[0]), new Dto.SensorDay(c[1], f[1])));
         }
         int withFire = counts.size();
-        return cached(new Dto.CalendarResponse(month, withFire, days,
+        return cached(new Dto.CalendarResponse(month, cover.res(), withFire, days,
                 withFire == 0 ? EMPTY : null), q.end());
     }
 

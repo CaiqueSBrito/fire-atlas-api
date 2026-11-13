@@ -1,16 +1,17 @@
 package com.fireatlas.api;
 
-import com.fireatlas.domain.BBox;
+import com.fireatlas.domain.Region;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 
-/** Parametros comuns validados: regiao, periodo e sensores. */
-public record QueryParams(BBox bbox, LocalDate start, LocalDate end, List<String> sensors) {
+/** Parametros comuns validados: regiao (bbox ou celulas H3), periodo e sensores. */
+public record QueryParams(Region region, LocalDate start, LocalDate end, List<String> sensors) {
 
-    public static QueryParams of(String bbox, LocalDate start, LocalDate end, String sensor, int maxDays) {
+    public static QueryParams of(String bbox, String cells, LocalDate start, LocalDate end, String sensor,
+                                 int maxDays) {
         if (start == null || end == null) {
             throw new IllegalArgumentException("parametros start e end (YYYY-MM-DD) sao obrigatorios");
         }
@@ -21,7 +22,7 @@ public record QueryParams(BBox bbox, LocalDate start, LocalDate end, List<String
         if (days > maxDays) {
             throw new IllegalArgumentException("periodo maximo para esta consulta: " + maxDays + " dias");
         }
-        return new QueryParams(BBox.parse(bbox), start, end, parseSensors(sensor));
+        return new QueryParams(Region.of(bbox, cells), start, end, parseSensors(sensor));
     }
 
     public static List<String> parseSensors(String sensor) {
