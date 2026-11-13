@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.Map;
+import java.util.TreeMap;
 
-/** Le um CSV da FIRMS em streaming, filtra por regiao/periodo e carrega no PostgreSQL via COPY. */
+/** Le um CSV da FIRMS em streaming, valida, filtra por regiao/periodo e carrega no PostgreSQL via COPY. */
 public class DetectionCsvLoader {
 
     private static final String COPY_SQL = "COPY detection (sensor, satellite, acq_date, acq_ts, lat, lon, "
@@ -23,14 +25,22 @@ public class DetectionCsvLoader {
 
     public record Filter(BBox bbox, LocalDate start, LocalDate end) {}
 
-    public record Stats(long scanned, long kept, long malformed, LocalDate minDate, LocalDate maxDate,
+    /**
+     * @param rejected       total de linhas rejeitadas por validacao (RN03)
+     * @param rejects        contagem por motivo de rejeicao
+     * @param rejectSamples  primeira linha de cada motivo (para diagnostico em log)
+     */
+    public record Stats(long scanned, long kept, long rejected, Map<String, Long> rejects,
+                        Map<String, String> rejectSamples, LocalDate minDate, LocalDate maxDate,
                         boolean stoppedEarly) {}
 
     public Stats load(BufferedReader reader, DetectionRowParser parser, Filter filter, CopyManager copyManager)
             throws IOException, SQLException {
         CopyIn copy = copyManager.copyIn(COPY_SQL);
         StringBuilder buf = new StringBuilder(FLUSH_BYTES + 4096);
-        long scanned = 0, kept = 0, malformed = 0, pastEnd = 0;
+        long scanned = 0, kept = 0, rejected = 0, pastEnd = 0;
+        Map<String, Long> rejects = new TreeMap<>();
+        Map<String, String> samples = new TreeMap<>();
         LocalDate min = null, max = null;
         boolean stoppedEarly = false;
         try {
@@ -38,11 +48,14 @@ public class DetectionCsvLoader {
             while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) continue;
                 scanned++;
-                DetectionRowParser.Row r = parser.parse(line);
-                if (r == null) {
-                    malformed++;
+                DetectionRowParser.Result res = parser.parse(line);
+                if (!res.accepted()) {
+                    rejected++;
+                    rejects.merge(res.rejectReason(), 1L, Long::sum);
+                    samples.putIfAbsent(res.rejectReason(), line.length() > 200 ? line.substring(0, 200) : line);
                     continue;
                 }
+                DetectionRowParser.Row r = res.row();
                 if (r.date().isAfter(filter.end())) {
                     if (++pastEnd >= EARLY_STOP_AFTER) {
                         stoppedEarly = true;
@@ -77,6 +90,6 @@ public class DetectionCsvLoader {
             }
             throw e;
         }
-        return new Stats(scanned, kept, malformed, min, max, stoppedEarly);
+        return new Stats(scanned, kept, rejected, rejects, samples, min, max, stoppedEarly);
     }
 }

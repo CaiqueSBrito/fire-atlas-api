@@ -49,10 +49,13 @@ public class IngestionRunner implements ApplicationRunner {
 
     private final DataSource dataSource;
     private final DatalakeClient lake;
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper;
 
-    public IngestionRunner(DataSource dataSource, @org.springframework.context.annotation.Lazy DatalakeClient lake) {
+    public IngestionRunner(DataSource dataSource, @org.springframework.context.annotation.Lazy DatalakeClient lake,
+                           com.fasterxml.jackson.databind.ObjectMapper mapper) {
         this.dataSource = dataSource;
         this.lake = lake;
+        this.mapper = mapper;
     }
 
     @Override
@@ -128,8 +131,9 @@ public class IngestionRunner implements ApplicationRunner {
 
                 try (PreparedStatement ins = con.prepareStatement("""
                         INSERT INTO ingestion_log (source_key, product, sensor, bbox, period_start, period_end,
-                                                   rows_scanned, rows_loaded, min_date, max_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")) {
+                                                   rows_scanned, rows_loaded, min_date, max_date,
+                                                   rows_rejected, rejects)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)""")) {
                     ins.setString(1, sourceKey);
                     ins.setString(2, product);
                     ins.setString(3, sensor);
@@ -140,12 +144,18 @@ public class IngestionRunner implements ApplicationRunner {
                     ins.setLong(8, stats.kept());
                     ins.setObject(9, stats.minDate());
                     ins.setObject(10, stats.maxDate());
+                    ins.setLong(11, stats.rejected());
+                    ins.setString(12, mapper.writeValueAsString(stats.rejects()));
                     ins.executeUpdate();
                 }
+                // RN06: so motivo e uma linha de exemplo dos dados publicos da FIRMS; nenhuma credencial aqui.
+                stats.rejectSamples().forEach((reason, sample) ->
+                        log.warn("{}: {} linha(s) rejeitada(s) por {} (exemplo: {})", fileName,
+                                stats.rejects().get(reason), reason, sample));
                 if (stats.kept() > 0) refreshGrid(con, stats.minDate(), stats.maxDate());
                 con.commit();
-                log.info("{}: {} linhas lidas, {} carregadas, {} malformadas{}", fileName, stats.scanned(),
-                        stats.kept(), stats.malformed(), stats.stoppedEarly() ? " (parou apos o periodo)" : "");
+                log.info("{}: {} linhas lidas, {} carregadas, {} rejeitadas{}", fileName, stats.scanned(),
+                        stats.kept(), stats.rejected(), stats.stoppedEarly() ? " (parou apos o periodo)" : "");
             } catch (IOException | SQLException | RuntimeException e) {
                 con.rollback();
                 throw e;

@@ -67,8 +67,55 @@ Erros de validacao retornam `400` (RFC 7807).
 O front deve chamar a API com `credentials: "include"`. Se front e API estiverem em dominios diferentes (HTTPS),
 use `COOKIE_SAME_SITE=None` e `COOKIE_SECURE=true`, e inclua o dominio do front em `CORS_ORIGINS`.
 
+## Variáveis de ambiente (RN01)
+
+Todas têm padrão para desenvolvimento local; só `DATALAKE_BUCKET` é obrigatória, e apenas para a ingestão.
+Use `.env.example` como modelo (o Spring não lê `.env` sozinho: exporte as variáveis ou configure na sua IDE).
+
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `DB_URL` | `jdbc:postgresql://localhost:5433/fireatlas` | Conexão com o PostGIS |
+| `DB_USER` / `DB_PASSWORD` | `fireatlas` / `fireatlas` | Credenciais do banco (somente dev local) |
+| `CORS_ORIGINS` | `http://localhost:3000` | Origens do front, separadas por vírgula |
+| `COOKIE_SAME_SITE` / `COOKIE_SECURE` | `Lax` / `false` | Cookie do perfil anônimo (`None`/`true` com front em outro domínio HTTPS) |
+| `DATALAKE_BUCKET` | — | Bucket do data lake (só ingestão) |
+| `AWS_REGION` | `us-east-2` | Região do bucket |
+| `TEST_DB_URL` / `TEST_DB_USER` / `TEST_DB_PASSWORD` | igual ao dev local | Banco usado pelos testes de aceite |
+
+Credenciais AWS **não** são variáveis do projeto: vêm do perfil local (`aws configure`) ou de IAM Role.
+
+## Módulos (RN02)
+
+| Pacote | Responsabilidade |
+|---|---|
+| `ingestion` | Integração com o data lake: leitura do CSV, validação (RN03), carga em lote |
+| `domain` | Tipos de domínio puros (`BBox`, grade geográfica) |
+| `query` | Persistência e consultas ao PostGIS; análises (z-score robusto); gravação de resultados derivados |
+| `api` | Controllers REST, DTOs, validação de parâmetros e tratamento de erros |
+| `config` | CORS e configuração web |
+
+O modelo de dados está em `src/main/resources/db/migration` (Flyway): `detection` (medições originais com sensor,
+satélite, instrumento, localização e origem), `daily_grid` (agregação), `ingestion_log` (metadados/proveniência da carga),
+`harmonization_run` (resultados derivados) e `user_preference`.
+
+## Integridade, proveniência e dados originais (RN03–RN05)
+
+- **Validação na entrada (RN03/CA03):** cada linha é validada (latitude/longitude, data, hora, satélite, FRP ≥ 0 e campos
+  numéricos). Linha inválida **não é gravada** e entra na contagem por motivo (`latitude_invalida`, `longitude_invalida`,
+  `data_invalida`, `hora_invalida`, `satelite_ausente`, `frp_invalido`, `campo_numerico_invalido`), registrada em log e em
+  `ingestion_log.rejects`. O banco repete as regras com `CHECK` como defesa em profundidade.
+- **Proveniência (RN04):** toda detecção guarda `sensor`, `satellite`, `source_product` e `source_file` (chave do objeto no lake).
+- **Originais imutáveis (RN05/CA04):** `detection` não aceita `UPDATE` (gatilho no banco). Resultados derivados vão para
+  `harmonization_run`, sem tocar nas medições. Correções entram por nova carga do arquivo (idempotente).
+
+## Erros (RN06)
+
+Erros de validação respondem `400` (RFC 7807). Falha de banco responde `503` com mensagem genérica; o detalhe técnico vai
+só para o log, sem URL, usuário ou senha de conexão. Erros inesperados respondem `500` genérico.
+
 ## Testes
 
 ```bash
-mvn test
+docker compose up -d   # os testes de aceite usam o PostGIS (em schema temporário, removido ao final)
+mvn test               # 8 unitários + 4 de aceite (CA01 a CA04); sem o banco, os de aceite são pulados
 ```

@@ -33,6 +33,17 @@ public class ApiExceptionHandler {
                 "valor invalido para o parametro " + e.getName());
     }
 
+    /**
+     * RN06: falha de banco e registrada (so a classe e a mensagem do driver) e a resposta e generica,
+     * sem URL, usuario ou senha de conexao.
+     */
+    @ExceptionHandler(org.springframework.dao.DataAccessException.class)
+    public ProblemDetail dataAccess(org.springframework.dao.DataAccessException e) {
+        log.error("Falha de acesso ao banco: {}", e.getClass().getSimpleName(), e);
+        return ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "Base de dados temporariamente indisponivel. Tente novamente em instantes.");
+    }
+
     /** Cliente fechou a conexao no meio da resposta: nao e erro do servidor. */
     @ExceptionHandler(AsyncRequestNotUsableException.class)
     public void clientAborted(AsyncRequestNotUsableException e, HttpServletResponse response) {
