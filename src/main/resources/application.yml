@@ -19,10 +19,22 @@ server:
     min-response-size: 1024
 
 fireatlas:
+  h3:
+    # Resolucao do indice H3 guardado em cada deteccao (a mais fina que a fonte entrega):
+    # 8 no dado bruto; 6 no ouro (que entrega de 0 a 6).
+    base-resolution: ${H3_BASE_RESOLUTION:8}
   cors-origins: ${CORS_ORIGINS:http://localhost:3000}
   cookie:
     same-site: ${COOKIE_SAME_SITE:Lax}   # use None + secure=true se o front estiver em outro dominio (HTTPS)
     secure: ${COOKIE_SECURE:false}
+  ingest:
+    # RN01: so produtos aprovados pela pesquisa podem ser importados (NASA FIRMS, via data lake)
+    approved-products: ${APPROVED_PRODUCTS:MODIS_C6.1,VIIRS_S-NPP,VIIRS_NOAA-20,VIIRS_NOAA-21}
+    # O indice H3 vem pronto na fonte (data lake): o backend so le esta coluna e nao converte lat/lon em H3.
+    h3-column: ${H3_COLUMN:h3}
+    # Pasta do data lake com os arquivos ({prefix}{produto}/{ano}/arquivo.csv|.parquet):
+    # "bronze/raw/" = CSV bruto da FIRMS (sem H3); "gold/" = camada ouro em Parquet, um foco por linha com o H3 pronto.
+    prefix: ${LAKE_PREFIX:bronze/raw/}
   s3:
     bucket: ${DATALAKE_BUCKET:}
     region: ${AWS_REGION:us-east-2}
