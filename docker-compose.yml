@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: fireatlas
+      POSTGRES_USER: fireatlas
+      POSTGRES_PASSWORD: fireatlas
+    ports:
+      - "5433:5432"   # 5433 no host para nao conflitar com outro Postgres local
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fireatlas -d fireatlas"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

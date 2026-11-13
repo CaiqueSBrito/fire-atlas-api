@@ -1,0 +1,9 @@
+target/
+.idea/
+*.iml
+.vscode/
+.env
+*.log
+data/raw/
+data/tmp/
+.aws/

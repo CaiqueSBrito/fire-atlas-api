@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: fire-atlas-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/fireatlas}
+    username: ${DB_USER:fireatlas}
+    password: ${DB_PASSWORD:fireatlas}
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    enabled: true
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 1024
+
+fireatlas:
+  cors-origins: ${CORS_ORIGINS:http://localhost:3000}
+  cookie:
+    same-site: ${COOKIE_SAME_SITE:Lax}   # use None + secure=true se o front estiver em outro dominio (HTTPS)
+    secure: ${COOKIE_SECURE:false}
+  s3:
+    bucket: ${DATALAKE_BUCKET:}
+    region: ${AWS_REGION:us-east-2}
+  limits:
+    max-days-points: 366
+    max-days-compare: 400
+    max-days-harmonize: 31
+    max-points: 5000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
