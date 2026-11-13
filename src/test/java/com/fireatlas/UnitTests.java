@@ -2,12 +2,17 @@ package com.fireatlas;
 
 import com.fireatlas.api.QueryParams;
 import com.fireatlas.domain.BBox;
+import com.fireatlas.domain.Detection;
 import com.fireatlas.domain.H3Index;
+import com.fireatlas.domain.Location;
 import com.fireatlas.domain.Region;
+import com.fireatlas.domain.Satellite;
+import com.fireatlas.domain.Sensor;
 import com.fireatlas.ingestion.DetectionRowParser;
 import com.fireatlas.query.Anomaly;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDate;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -25,11 +30,14 @@ class UnitTests {
     void parsesRealVIIRSNrtLine() {
         var res = parser().parse("-33.99026,22.43891,305.28,0.49,0.4,2026-08-01,0001,SNPP,SNPP,n,2.0NRT,281.04,1.44,N");
         assertTrue(res.accepted());
-        assertEquals(LocalDate.of(2026, 8, 1), res.row().date());
+        assertEquals(LocalDate.of(2026, 8, 1), res.detection().acqDate());
+        assertEquals("VIIRS", res.detection().sensor());
+        assertEquals(H3Index.cell(-33.99026, 22.43891), res.detection().location().h3());
+        assertEquals("VIIRS_S-NPP", res.detection().source().product());
         assertEquals(
                 "VIIRS,SNPP,2026-08-01,2026-08-01T00:01:00Z,-33.99026,22.43891,305.28,281.04,0.49,0.4,1.44,n,n,N,2.0NRT,VIIRS_S-NPP,bronze/raw/x.csv,"
                         + H3Index.cell(-33.99026, 22.43891),
-                res.row().csvLine());
+                res.detection().toCopyLine());
     }
 
     @Test
@@ -57,6 +65,35 @@ class UnitTests {
         assertEquals(DetectionRowParser.CAMPO_NUMERICO_INVALIDO,
                 p.parse(ok.replace("305.28", "quente")).rejectReason());
         assertEquals(DetectionRowParser.LATITUDE_INVALIDA, p.parse("lixo").rejectReason());
+    }
+
+    @Test
+    void domainEntitiesEnforceInvariants() {
+        var loc = Location.of(-10.5, -55.5);
+        assertEquals(H3Index.cell(-10.5, -55.5), loc.h3());
+        assertEquals(H3Index.toHex(loc.h3()), loc.h3Hex());
+        assertThrows(IllegalArgumentException.class, () -> Location.of(95, 0));
+        assertThrows(IllegalArgumentException.class, () -> Location.of(0, -181));
+
+        var src = new Detection.Source("MODIS_C6.1", "bronze/raw/a.csv");
+        var at = Instant.parse("2026-09-02T18:05:00Z");
+        var ok = new Detection("MODIS", "Aqua", at, loc, 330.1, 300.2, 1.0, 1.0, 25.5, "85", "h", "D", "6.1NRT", src);
+        assertEquals(LocalDate.of(2026, 9, 2), ok.acqDate());
+        assertThrows(IllegalArgumentException.class,
+                () -> new Detection("MODIS", "Aqua", at, loc, null, null, null, null, -1.0, "", "", "", "", src));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Detection("", "Aqua", at, loc, null, null, null, null, 1.0, "", "", "", "", src));
+        assertThrows(IllegalArgumentException.class, () -> new Detection.Source("", "f"));
+
+        // campos ausentes viram vazio (NULL no COPY); texto com virgula e protegido por aspas
+        var sparse = new Detection("VIIRS", "SNPP", at, loc, null, null, null, null, null, null, null, null, null,
+                new Detection.Source("VIIRS_S-NPP", "pasta,com virgula.csv"));
+        assertTrue(sparse.toCopyLine().contains(",VIIRS_S-NPP,\"pasta,com virgula.csv\","));
+
+        var sensor = new Sensor("MODIS", "Moderate Resolution Imaging Spectroradiometer", 1000, "d");
+        assertEquals(1000, sensor.nominalResolutionMeters());
+        assertThrows(IllegalArgumentException.class, () -> new Sensor("X", "x", 0, "d"));
+        assertThrows(IllegalArgumentException.class, () -> new Satellite("", "MODIS", "p", "q"));
     }
 
     @Test

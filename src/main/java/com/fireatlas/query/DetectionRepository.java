@@ -128,8 +128,10 @@ public class DetectionRepository {
                        coalesce(sum(frp), 0) AS frp_total,
                        count(*) FILTER (WHERE confidence_class = 'l') AS conf_low,
                        count(*) FILTER (WHERE confidence_class = 'n') AS conf_nominal,
-                       count(*) FILTER (WHERE confidence_class = 'h') AS conf_high
+                       count(*) FILTER (WHERE confidence_class = 'h') AS conf_high,
+                       max(s.nominal_resolution_m) AS resolution_m
                 FROM detection
+                JOIN sensor s ON s.code = detection.sensor
                 WHERE acq_date BETWEEN :start AND :end
                   AND sensor IN (:sensors)
                   AND {region}
@@ -144,7 +146,7 @@ public class DetectionRepository {
             String sensor = rs.getString("sensor");
             return new Dto.SensorStats(sensor, rs.getLong("n"), rs.getInt("days"),
                     getDouble(rs, "frp_mean"), getDouble(rs, "frp_p50"), getFloat(rs, "frp_max"),
-                    rs.getDouble("frp_total"), conf, "MODIS".equals(sensor) ? 1000 : 375);
+                    rs.getDouble("frp_total"), conf, rs.getInt("resolution_m"));
         });
     }
 

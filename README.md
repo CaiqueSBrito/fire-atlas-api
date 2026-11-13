@@ -51,7 +51,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest \
 | GET | `/timeseries` (`bbox` ou `cells`, `start`, `end`, `sensor`) | Serie diaria e dias de atividade incomum |
 | GET | `/harmonized` (`bbox` ou `cells`, `start`, `end`) | Harmonizacao MODIS×VIIRS (ver `docs/HARMONIZACAO.md`) |
 | GET/PUT | `/preferences` | Regiao favorita do usuario anonimo (cookie `fa_uid`) |
-| GET | `/meta/sources`, `/meta/coverage` | Rastreabilidade e cobertura |
+| GET | `/meta/sources`, `/meta/coverage`, `/meta/sensors` | Rastreabilidade, cobertura e catalogo de sensores/satelites |
 
 Região: informe **`bbox`** (`minLon,minLat,maxLon,maxLat`) **ou `cells`** (índices H3 em hexadecimal, separados por vírgula, resolução até 8), nunca os dois. `sensor` = `MODIS | VIIRS | BOTH`. Sem resultados, a resposta traz `message`.
 Erros de validacao retornam `400` (RFC 7807).
@@ -89,7 +89,7 @@ Credenciais AWS **não** são variáveis do projeto: vêm do perfil local (`aws 
 | Pacote | Responsabilidade |
 |---|---|
 | `ingestion` | Integração com o data lake: leitura do CSV, validação (RN03), carga em lote |
-| `domain` | Tipos de domínio puros (`BBox`, `Region`, indexacao `H3Index`) |
+| `domain` | Entidades e tipos de dominio puros: `Detection` (com `Location` e `Source`), `Sensor`, `Satellite`, `BBox`, `Region`, `H3Index` |
 | `query` | Persistência e consultas ao PostGIS; análises (z-score robusto); gravação de resultados derivados |
 | `api` | Controllers REST, DTOs, validação de parâmetros e tratamento de erros |
 | `config` | CORS e configuração web |
@@ -146,3 +146,18 @@ Usamos [H3](https://h3geo.org/) onde ele agrega valor e PostGIS onde ele é mais
 A FIRMS publica algumas detecções VIIRS com **FRP negativo** (ex.: −0,66, −1), que a validação rejeita (`frp_invalido`).
 Só são contadas como rejeição as linhas dentro da região e do período pedidos. Se a equipe preferir manter essas detecções
 com FRP ausente, é uma decisão a tomar (ver `DetectionRowParser`).
+
+## Modelo de dados e entidades
+
+| Tabela | Entidade Java | Papel |
+|---|---|---|
+| `sensor` | `Sensor` | Catalogo: MODIS (1000 m) e VIIRS (375 m), com nome e descricao; a resolucao nominal vem daqui |
+| `satellite` | `Satellite` | Plataformas que carregam cada sensor: Terra e Aqua (MODIS); SNPP, N20 e N21 (VIIRS) |
+| `detection` | `Detection` | Medicao original (sensor, satelite, instante UTC, FRP, confianca...) com `Location` (lat/lon + H3) e `Source` (produto e arquivo do lake) |
+| `daily_h3` | — | Agregacao diaria por celula H3 e sensor (derivada) |
+| `ingestion_log` | — | Metadados de cada carga: origem, regiao, periodo, linhas lidas/gravadas/rejeitadas por motivo |
+| `harmonization_run` | — | Resultados derivados (nao alteram `detection`) |
+| `user_preference` | — | Regiao favorita do usuario anonimo |
+
+`detection.sensor` tem chave estrangeira para `sensor`: uma deteccao so existe para um sensor do catalogo. O parser da
+ingestao produz a entidade `Detection` (invariantes validadas no construtor) e o carregador a grava via `COPY`.

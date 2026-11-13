@@ -58,6 +58,10 @@ public final class Dto {
 
     public record Coverage(String sensor, LocalDate minDate, LocalDate maxDate, long detections) {}
 
+    /** Entrada do catalogo: sensor, resolucao nominal e satelites que o carregam. */
+    public record SensorCatalogEntry(String code, String name, int nominalResolutionMeters, String description,
+                                     List<com.fireatlas.domain.Satellite> satellites) {}
+
     /** Regiao favorita: bbox (minLon,minLat,maxLon,maxLat) e/ou celulas H3 em hexadecimal. */
     public record Preferences(String name, List<Double> bbox, List<String> cells, String sensor, Integer zoom,
                               List<Double> center) {}

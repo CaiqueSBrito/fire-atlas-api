@@ -234,4 +234,32 @@ class AcceptanceTest {
         mvc.perform(get("/api/v1/detections").param("start", "2026-09-02").param("end", "2026-09-02"))
                 .andExpect(status().isBadRequest());
     }
+
+    @Test
+    @Order(6)
+    void sensor_como_entidade_catalogo_resolucao_e_integridade() throws Exception {
+        // Catalogo semeado: sensores com resolucao nominal e satelites que os carregam.
+        mvc.perform(get("/api/v1/meta/sensors"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[?(@.code=='MODIS')].nominalResolutionMeters").value(1000))
+                .andExpect(jsonPath("$[?(@.code=='VIIRS')].nominalResolutionMeters").value(375))
+                .andExpect(jsonPath("$[?(@.code=='MODIS')].satellites.length()").value(2))
+                .andExpect(jsonPath("$[?(@.code=='VIIRS')].satellites.length()").value(3));
+
+        // A resolucao nominal do /compare vem do catalogo, nao do codigo.
+        mvc.perform(get("/api/v1/compare").param("bbox", "-56,-11,-55,-10")
+                        .param("start", "2026-09-02").param("end", "2026-09-02"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sensors[?(@.sensor=='MODIS')].nominalResolutionMeters").value(1000))
+                .andExpect(jsonPath("$.sensors[?(@.sensor=='VIIRS')].nominalResolutionMeters").value(375));
+
+        // Toda deteccao precisa apontar para um sensor do catalogo.
+        assertThrows(DataAccessException.class, () -> jdbc.update("""
+                INSERT INTO detection (sensor, satellite, acq_date, acq_ts, lat, lon, source_product, source_file)
+                VALUES ('LANDSAT', 'L9', '2026-09-02', '2026-09-02T18:05:00Z', -10, -55, 'X', 'it/x.csv')"""));
+        // Um satelite do catalogo nao pode apontar para sensor inexistente.
+        assertThrows(DataAccessException.class, () -> jdbc.update(
+                "INSERT INTO satellite (code, sensor, platform_name, source_product) VALUES ('Z', 'NAO_EXISTE', 'z', 'z')"));
+    }
 }

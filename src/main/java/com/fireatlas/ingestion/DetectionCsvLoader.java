@@ -1,6 +1,7 @@
 package com.fireatlas.ingestion;
 
 import com.fireatlas.domain.BBox;
+import com.fireatlas.domain.Detection;
 import org.postgresql.copy.CopyIn;
 import org.postgresql.copy.CopyManager;
 
@@ -26,7 +27,7 @@ public class DetectionCsvLoader {
     public record Filter(BBox bbox, LocalDate start, LocalDate end) {}
 
     /**
-     * @param rejected       total de linhas rejeitadas por validacao (RN03)
+     * @param rejected       total de linhas rejeitadas por validacao (RN03), dentro da regiao/periodo pedidos
      * @param rejects        contagem por motivo de rejeicao
      * @param rejectSamples  primeira linha de cada motivo (para diagnostico em log)
      */
@@ -51,7 +52,7 @@ public class DetectionCsvLoader {
                 DetectionRowParser.Result res = parser.parse(line);
                 if (!res.accepted()) {
                     // Linha invalida mas fora da regiao/periodo pedidos: nao e relevante, nao conta como rejeicao.
-                    DetectionRowParser.Row loc = parser.peekLocation(line);
+                    DetectionRowParser.Peek loc = parser.peekLocation(line);
                     if (loc != null) {
                         if (loc.date().isAfter(filter.end())) {
                             if (++pastEnd >= EARLY_STOP_AFTER) {
@@ -70,8 +71,9 @@ public class DetectionCsvLoader {
                     samples.putIfAbsent(res.rejectReason(), line.length() > 200 ? line.substring(0, 200) : line);
                     continue;
                 }
-                DetectionRowParser.Row r = res.row();
-                if (r.date().isAfter(filter.end())) {
+                Detection d = res.detection();
+                LocalDate date = d.acqDate();
+                if (date.isAfter(filter.end())) {
                     if (++pastEnd >= EARLY_STOP_AFTER) {
                         stoppedEarly = true;
                         break;
@@ -79,11 +81,14 @@ public class DetectionCsvLoader {
                     continue;
                 }
                 pastEnd = 0;
-                if (r.date().isBefore(filter.start()) || !filter.bbox().contains(r.lon(), r.lat())) continue;
-                buf.append(r.csvLine()).append('\n');
+                if (date.isBefore(filter.start())
+                        || !filter.bbox().contains(d.location().lon(), d.location().lat())) {
+                    continue;
+                }
+                buf.append(d.toCopyLine()).append('\n');
                 kept++;
-                if (min == null || r.date().isBefore(min)) min = r.date();
-                if (max == null || r.date().isAfter(max)) max = r.date();
+                if (min == null || date.isBefore(min)) min = date;
+                if (max == null || date.isAfter(max)) max = date;
                 if (buf.length() >= FLUSH_BYTES) {
                     byte[] b = buf.toString().getBytes(StandardCharsets.UTF_8);
                     copy.writeToCopy(b, 0, b.length);

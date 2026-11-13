@@ -1,24 +1,26 @@
 package com.fireatlas.ingestion;
 
-import com.fireatlas.domain.H3Index;
+import com.fireatlas.domain.Detection;
+import com.fireatlas.domain.Location;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Converte uma linha de CSV da FIRMS (MODIS ou VIIRS) para uma linha CSV do esquema unico "detection",
- * validando os campos obrigatorios (RN03). Linhas invalidas sao rejeitadas com um motivo.
+ * Converte uma linha de CSV da FIRMS (MODIS ou VIIRS) em uma entidade {@link Detection}, validando os campos
+ * obrigatorios (RN03). Linhas invalidas sao rejeitadas com um motivo.
  * O mapeamento e guiado pelo cabecalho, entao funciona com variacoes de colunas entre produtos.
  */
 public final class DetectionRowParser {
 
-    public record Row(LocalDate date, double lat, double lon, String csvLine) {}
-
     /** Exatamente um dos dois e nao nulo. */
-    public record Result(Row row, String rejectReason) {
-        static Result ok(Row row) {
-            return new Result(row, null);
+    public record Result(Detection detection, String rejectReason) {
+        static Result ok(Detection detection) {
+            return new Result(detection, null);
         }
 
         static Result reject(String reason) {
@@ -26,9 +28,12 @@ public final class DetectionRowParser {
         }
 
         public boolean accepted() {
-            return row != null;
+            return detection != null;
         }
     }
+
+    /** Data e coordenadas de uma linha (validas), mesmo que o resto da linha seja invalido. */
+    public record Peek(LocalDate date, double lat, double lon) {}
 
     // Motivos de rejeicao (estaveis: aparecem em logs, ingestion_log e testes).
     public static final String LATITUDE_INVALIDA = "latitude_invalida";
@@ -41,8 +46,7 @@ public final class DetectionRowParser {
 
     private final Map<String, Integer> idx = new HashMap<>();
     private final String sensor;
-    private final String product;
-    private final String sourceFile;
+    private final Detection.Source source;
 
     public DetectionRowParser(String header, String sensor, String product, String sourceFile) {
         String[] cols = header.trim().split(",");
@@ -53,21 +57,20 @@ public final class DetectionRowParser {
             }
         }
         this.sensor = sensor;
-        this.product = product;
-        this.sourceFile = sourceFile;
+        this.source = new Detection.Source(product, sourceFile);
     }
 
     /**
      * Data e coordenadas da linha, se forem validas (senao null). Permite ao carregador ignorar linhas
-     * invalidas que estao fora do recorte pedido, sem contá-las como rejeicoes.
+     * invalidas que estao fora do recorte pedido, sem conta-las como rejeicoes.
      */
-    public Row peekLocation(String line) {
+    public Peek peekLocation(String line) {
         String[] f = line.split(",", -1);
         try {
             double lat = Double.parseDouble(get(f, "latitude"));
             double lon = Double.parseDouble(get(f, "longitude"));
             if (!(lat >= -90 && lat <= 90) || !(lon >= -180 && lon <= 180)) return null;
-            return new Row(LocalDate.parse(get(f, "acq_date")), lat, lon, null);
+            return new Peek(LocalDate.parse(get(f, "acq_date")), lat, lon);
         } catch (RuntimeException e) {
             return null;
         }
@@ -108,45 +111,31 @@ public final class DetectionRowParser {
         String satellite = get(f, "satellite");
         if (satellite.isEmpty()) return Result.reject(SATELITE_AUSENTE);
 
-        String frp = get(f, "frp");
-        if (!frp.isEmpty()) {
-            try {
-                if (!(Double.parseDouble(frp) >= 0)) return Result.reject(FRP_INVALIDO);
-            } catch (NumberFormatException e) {
-                return Result.reject(FRP_INVALIDO);
-            }
+        Double frp;
+        try {
+            frp = optionalNumber(get(f, "frp"));
+        } catch (NumberFormatException e) {
+            return Result.reject(FRP_INVALIDO);
+        }
+        if (frp != null && !(frp >= 0)) return Result.reject(FRP_INVALIDO);
+
+        Double brightness, t31, scan, track;
+        try {
+            brightness = optionalNumber(first(f, "brightness", "bright_ti4"));
+            t31 = optionalNumber(first(f, "bright_t31", "bright_ti5"));
+            scan = optionalNumber(get(f, "scan"));
+            track = optionalNumber(get(f, "track"));
+        } catch (NumberFormatException e) {
+            return Result.reject(CAMPO_NUMERICO_INVALIDO);
         }
 
-        String brightness = first(f, "brightness", "bright_ti4");
-        String t31 = first(f, "bright_t31", "bright_ti5");
-        String scan = get(f, "scan");
-        String track = get(f, "track");
-        for (String v : new String[]{brightness, t31, scan, track}) {
-            if (!isOptionalNumber(v)) return Result.reject(CAMPO_NUMERICO_INVALIDO);
-        }
-
-        String ts = date + "T" + t.substring(0, 2) + ":" + t.substring(2, 4) + ":00Z";
         String confRaw = get(f, "confidence");
-        StringBuilder sb = new StringBuilder(160);
-        sb.append(sensor).append(',')
-                .append(satellite).append(',')
-                .append(date).append(',')
-                .append(ts).append(',')
-                .append(lat).append(',')
-                .append(lon).append(',')
-                .append(brightness).append(',')
-                .append(t31).append(',')
-                .append(scan).append(',')
-                .append(track).append(',')
-                .append(frp).append(',')
-                .append(confRaw).append(',')
-                .append(confidenceClass(confRaw)).append(',')
-                .append(get(f, "daynight")).append(',')
-                .append(get(f, "version")).append(',')
-                .append(product).append(',')
-                .append(sourceFile).append(',')
-                .append(H3Index.cell(lat, lon));
-        return Result.ok(new Row(date, lat, lon, sb.toString()));
+        var instant = LocalDateTime.of(date,
+                LocalTime.of(Integer.parseInt(t.substring(0, 2)), Integer.parseInt(t.substring(2, 4))))
+                .toInstant(ZoneOffset.UTC);
+        return Result.ok(new Detection(sensor, satellite, instant, Location.of(lat, lon),
+                brightness, t31, scan, track, frp, confRaw, confidenceClass(confRaw),
+                get(f, "daynight"), get(f, "version"), source));
     }
 
     /**
@@ -173,13 +162,12 @@ public final class DetectionRowParser {
         return s.length() >= 4 ? s : "0".repeat(4 - s.length()) + s;
     }
 
-    private static boolean isOptionalNumber(String v) {
-        if (v.isEmpty()) return true;
-        try {
-            return !Double.isNaN(Double.parseDouble(v));
-        } catch (NumberFormatException e) {
-            return false;
-        }
+    /** Vazio vira null; texto nao numerico, NaN ou infinito lancam NumberFormatException. */
+    private static Double optionalNumber(String v) {
+        if (v.isEmpty()) return null;
+        double d = Double.parseDouble(v);
+        if (Double.isNaN(d) || Double.isInfinite(d)) throw new NumberFormatException(v);
+        return d;
     }
 
     private String get(String[] f, String col) {
