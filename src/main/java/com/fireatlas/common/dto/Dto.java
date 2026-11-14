@@ -13,7 +13,8 @@ public final class Dto {
     private Dto() {}
 
     public record Point(String sensor, String satellite, Instant acquiredAt, double lat, double lon,
-                        Float frp, String confidence, String dayNight, Float brightness) {}
+                        Float frp, String confidence, String dayNight, Float brightness,
+                        String sourceProduct, String sourceFile) {}
 
     public record Cell(String sensor, double lat, double lon, int count, double frpSum, Float frpMax) {}
 

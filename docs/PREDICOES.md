@@ -17,7 +17,7 @@ Conforme `.agents/references/00-FONTES_E_ESCOPO.md`, `01-ARQUITETURA_E_CONTRATOS
 
 ## 2. Estado Atual do Modelo (Diagnostico)
 
-A auditoria integral do repositorio confirmou que:
+A auditoria integral do repositorio (feita antes da integracao com o data lake; veja a secao 12 para o estado atual) confirmou que:
 
 - **Nao ha artefato de modelo** (`.pkl`, `.onnx`, `.pt`, `.h5`, `.pmml`), script Python de inferencia/treinamento ou biblioteca de machine learning em `pom.xml`.
 - **Nao ha variavel-alvo formalmente aprovada**, horizonte preditivo homologado nem relatorio de avaliacao fora da amostra.
@@ -339,3 +339,58 @@ O modelo preditivo ainda não foi fornecido. Após sua disponibilização, execu
 **CA01 e CA02 permanecem condicionais e não concluídos.** CA03 deve preservar a indisponibilidade explícita quando faltarem modelo, método, cobertura ou condições exigidas. Até a homologação, manter `enabled=false`, `MODEL_NOT_VALIDATED`, `available=false` e previsões nulas. A referência inicial `336031a4c1bcf07a5ebb6cb6f10e4782c919cbbc` pertence à baseline anterior; não é commit de entrega da NASA-020. Registrar o SHA de entrega somente após a aprovação e publicação futuras.
 
 Acompanhamento: [NASA-020 | Integrar e homologar modelo preditivo quando disponível](https://github.com/CaiqueSBrito/fire-atlas-api/issues/2).
+
+## 12. Integracao com a previsao do pipeline de dados (`gold/forecast`) — atualizacao
+
+O time de dados treinou e publica um modelo no data lake. O backend **nao treina nem recalcula**: so le a previsao ja
+gerada e a disponibiliza, deixando claro o que a fonte informa e o que nao informa.
+
+### Evidencias no data lake (somente leitura)
+
+- Modelo: `models/xgb-rf10/` (XGBoost; `model.ubj`, 20 configuracoes em `models/` e `ml-train.log`). O `commitInfo` do Delta
+  da `gold/forecast` traz `model_sha256`, `method_version`, `silver_version` e `issue_date` (guardados na tabela `forecast_run`).
+- Dados: `gold/ml_dataset`; treino com cerca de 92 milhoes de linhas e validacao com cerca de 22,9 milhoes; meses de
+  teste separados de 2023-01 a 2026-11 (separacao cronologica, coerente com a `RN03`).
+- Metricas **de validacao** no log: AUC-PR de cerca de 0,545 e logloss de cerca de 0,131 (melhor configuracao). **Nao** sao
+  precisao nem acuracia, e **nao** sao as metricas dos meses de teste (essas nao constam no log).
+- Saida publicada: `prob_fire_7d` (probabilidade de deteccao de fogo na celula H3 de resolucao 6 nos proximos 7 dias),
+  por data de emissao. **Nao ha FRP previsto** na fonte: `predictedFrpMw` fica `null` (`RN04`).
+
+### Como ligar (desligado por padrao)
+
+1. Importar a previsao: `--spring.profiles.active=ingest-gold --ingest.dataset=forecast` (e os lugares: `--ingest.dataset=places`).
+2. Subir a API com `fireatlas.prediction.source=forecast-table` (variavel `FIREATLAS_PREDICTION_SOURCE`).
+
+Sem isso, nada muda: `GET /api/v1/predictions` continua em `MODEL_NOT_VALIDATED`.
+
+### Comportamento de `GET /api/v1/predictions` com `forecast-table`
+
+| Situacao | Estado |
+|---|---|
+| Nenhuma previsao importada, ou nenhuma celula na regiao | `INSUFFICIENT_DATA_COVERAGE` |
+| Janela pedida fora de [emissao, emissao + 7 dias] | `OUT_OF_APPROVED_SCOPE` |
+| Caso contrario | `AVAILABLE`: alvo `fire_detection_probability_7d`, horizonte 0 a 7 dias, uma emissao (a mais recente), um ponto por celula, ordenado por probabilidade |
+
+Em todos os casos `evaluationMetrics.evaluationMetricsPublished = false`: a fonte nao publica metricas de teste na tabela.
+O `modelVersion` vem de `forecast_run` (`modelo sha256 <12> | metodo <v> | prata v<n>`). A regiao (bbox) e aplicada sobre o
+centro de cada celula (latitude/longitude do pipeline, em `h3_place`); o backend nao converte coordenadas em H3.
+
+### Limitacoes e condicoes de uso
+
+- O modelo e do time de dados; **a aprovacao cientifica formal (`RN01`) e as metricas de teste ainda precisam ser entregues por eles**
+  (um arquivo de metricas ou "model card"). Ate la, use `forecast-table` apenas como demonstracao e diga isso na interface.
+- A probabilidade e por celula de ~36 km², em 7 dias; nao indica local exato nem intensidade (sem FRP).
+- A previsao e tao recente quanto a ultima emissao importada; fora da janela de 7 dias a API informa indisponibilidade.
+- A calibracao das probabilidades nao foi verificada pelo backend.
+
+### Matriz `NASA-020` atualizada
+
+| Regra / Criterio | Estado |
+|---|---|
+| `RN01` | Bloqueio mantido por padrao; `forecast-table` e opt-in. Falta a aprovacao formal do modelo pelo time de dados |
+| `RN02` | Dados e variaveis em `gold/ml_dataset` e `models/xgb-rf10` (documentacao completa e do time de dados) |
+| `RN03` | Meses de teste separados no log de treino; corte `asOf` no contrato do backend |
+| `RN04` | Somente probabilidade; sem FRP previsto; metricas nao exibidas como se existissem |
+| `RN05` / `CA03` | Verificado (padrao `MODEL_NOT_VALIDATED`; sem previsao ou fora da janela, indisponibilidade sem valores inventados) |
+| `CA01` | Saida documentada para o horizonte de 7 dias (`ForecastTableProviderTest`) |
+| `CA02` | Metricas de validacao no log de treino; metricas de teste e relatorio **pendentes do time de dados** |

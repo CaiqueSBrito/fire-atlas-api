@@ -42,7 +42,8 @@ public class DetectionRepository {
     /** Pontos individuais (pede limit+1 para sinalizar truncamento). */
     public List<Dto.Point> points(BBox b, LocalDate s, LocalDate e, List<String> sensors, int limit) {
         String sql = """
-                SELECT sensor, satellite, acq_ts, lat, lon, frp, confidence_class, daynight, brightness
+                SELECT sensor, satellite, acq_ts, lat, lon, frp, confidence_class, daynight, brightness,
+                       source_product, source_file
                 FROM detection
                 WHERE acq_date BETWEEN :start AND :end
                   AND sensor IN (:sensors)
@@ -54,7 +55,7 @@ public class DetectionRepository {
                 rs.getString("sensor"), rs.getString("satellite"),
                 rs.getTimestamp("acq_ts").toInstant(), rs.getDouble("lat"), rs.getDouble("lon"),
                 getFloat(rs, "frp"), rs.getString("confidence_class"), rs.getString("daynight"),
-                getFloat(rs, "brightness")));
+                getFloat(rs, "brightness"), rs.getString("source_product"), rs.getString("source_file")));
     }
 
     /** Celulas agregadas a partir da grade diaria (rapido mesmo para periodos longos). */
