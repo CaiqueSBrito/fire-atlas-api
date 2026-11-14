@@ -6,24 +6,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Regiao de consulta: um retangulo (bbox) OU um conjunto de celulas H3.
- * <ul>
- *   <li>Consultas agregadas (mapa afastado, calendario, serie temporal) usam daily_h3 e exigem celulas H3: o
- *       backend nao converte bbox em celulas.</li>
- *   <li>Consultas sobre deteccoes aceitam as duas: bbox usa o filtro espacial exato do PostGIS; celulas usam o
- *       indice h3 que veio da fonte.</li>
- * </ul>
+ * Regiao de consulta: celulas H3 (indices em hexadecimal). A gold so tem agregados por celula H3, entao toda
+ * consulta exige celulas; o bbox e aceito na sintaxe mas rejeitado com mensagem clara: a API nao converte bbox em
+ * celulas (o H3 e consumido, nao calculado).
  */
 public final class Region {
 
     public static final int MAX_INPUT_CELLS = 2000;
-    public static final int MAX_DETECTION_CELLS = 50_000;
     /** Maximo de celulas H3 na cobertura de uma consulta de mapa (limita o tamanho da consulta). */
     public static final int MAX_MAP_CELLS = 20_000;
     /** Maximo de celulas H3 na cobertura de calendario/serie temporal. */
     public static final int MAX_AGG_CELLS = 5_000;
-    /** Latitude maxima assumida na tolerancia da harmonizacao quando a regiao e dada por celulas (conservador). */
-    private static final double CELLS_MAX_ABS_LAT = 80.0;
 
     /** Celulas H3 numa resolucao. */
     public record Cover(int res, List<Long> cells) {}
@@ -76,16 +69,6 @@ public final class Region {
         return isBBox() ? bbox.toString() : "h3:" + cells.size() + " celulas";
     }
 
-    /** Latitude absoluta maxima da regiao; por celulas (sem converter H3 em coordenadas) assume um limite seguro. */
-    public double maxAbsLat() {
-        return isBBox() ? bbox.maxAbsLat() : CELLS_MAX_ABS_LAT;
-    }
-
-    /** Celulas na resolucao-base (a do indice h3 das deteccoes), para filtrar deteccoes (somente regiao por celulas). */
-    public List<Long> detectionCells(int baseResolution) {
-        return H3Index.toResolution(cells, baseResolution, MAX_DETECTION_CELLS);
-    }
-
     /**
      * Celulas da regiao na resolucao preferida; se passar de maxCells, desce de resolucao ate caber.
      * Exige regiao por celulas H3: o backend nao converte bbox em celulas.
@@ -99,6 +82,16 @@ public final class Region {
             if (size(r) <= maxCells) return new Cover(r, H3Index.toResolution(cells, r, maxCells));
         }
         throw new InvalidParameterException("cells", "regiao grande demais para esta consulta; reduza a area");
+    }
+
+    /**
+     * Cobertura na resolucao das proprias celulas informadas (a mais fina entre elas, limitada pela base): a gold
+     * ja traz cada resolucao pronta, entao nao ha expansao em celulas filhas quando as celulas tem a mesma resolucao.
+     */
+    public Cover coverNative(int baseResolution, int maxCells) {
+        if (isBBox()) return coverFitting(baseResolution, maxCells); // rejeita bbox com a mensagem padrao
+        int finest = cells.stream().mapToInt(H3Index::resolution).max().orElse(0);
+        return coverFitting(Math.min(baseResolution, finest), maxCells);
     }
 
     private long size(int res) {

@@ -1,5 +1,11 @@
 # Harmonizacao MODIS × VIIRS — metodo v0 (a validar pela equipe)
 
+> **INDISPONIVEL COM A GOLD.** A API passou a usar somente a camada ouro (`gold/map_grid`), que traz agregados por
+> celula H3, dia e sensor, sem focos individuais. O pareamento abaixo exige posicao e hora de cada deteccao, por isso
+> `/harmonized` e `/harmonized/matches` respondem 501. O codigo do metodo v0 esta no historico do Git (commit 1689dc3,
+> branch `feature/importacao-fontes`) e pode voltar se a gold passar a ter focos individuais. O texto abaixo documenta
+> o metodo para essa eventualidade.
+
 ## Problema
 MODIS (~1 km) e VIIRS (375 m) detectam focos com resolucao e sensibilidade diferentes. Contar pontos de cada sensor
 e comparar **nao e valido**: o VIIRS enxerga focos menores e um pixel MODIS pode conter varios pixels VIIRS.

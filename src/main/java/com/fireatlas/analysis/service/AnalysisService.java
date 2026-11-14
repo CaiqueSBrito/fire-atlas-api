@@ -31,9 +31,10 @@ public class AnalysisService {
                     + "harmonizacao para comparar.";
 
     static final String COMPARE_METHOD =
-            "Estatisticas exatas por sensor sobre as deteccoes do recorte: frpMean = media aritmetica do FRP; "
-                    + "frpMedian = mediana (percentil 50); frpMax = maximo; frpTotal = soma (dupla precisao); "
-                    + "confidence = contagem por classe l/n/h; daysWithData = dias com ao menos uma deteccao.";
+            "Estatisticas por sensor somando as celulas H3 da regiao na grade diaria da gold: frpMean = soma do FRP "
+                    + "dividida pelo numero de deteccoes; frpMax = maior FRP; frpTotal = soma; confidence = contagem "
+                    + "por classe l/n/h (so VIIRS); confidenceMean = media da confianca 0-100 (so MODIS), ponderada "
+                    + "pelas deteccoes; daysWithData = dias com ao menos uma deteccao. Nao ha mediana de FRP.";
 
     static final String TIMESERIES_METHOD =
             "Contagens diarias por sensor somando as celulas H3 informadas; dia atipico = z-score robusto "
@@ -64,7 +65,8 @@ public class AnalysisService {
 
     public AnalysisDto.CompareResponse compare(Region region, LocalDate start, LocalDate end,
                                                List<String> sensors) {
-        List<SensorStats> stats = repository.findSensorStats(region, start, end, sensors);
+        Region.Cover cover = region.coverNative(h3.baseResolution(), Region.MAX_AGG_CELLS);
+        List<SensorStats> stats = repository.findSensorStats(cover, start, end, sensors);
         String message = stats.isEmpty() ? Messages.NO_DETECTIONS : null;
         return new AnalysisDto.CompareResponse(region.describe(), start, end, stats, COMPARE_NOTICE,
                 IndicatorMeta.of(region.describe(), start, end, COMPARE_METHOD), message);
@@ -72,7 +74,7 @@ public class AnalysisService {
 
     public AnalysisDto.TimeseriesResponse timeseries(Region region, LocalDate start, LocalDate end,
                                                      List<String> sensors) {
-        Region.Cover cover = region.coverFitting(h3.baseResolution(), Region.MAX_AGG_CELLS);
+        Region.Cover cover = region.coverNative(h3.baseResolution(), Region.MAX_AGG_CELLS);
         List<DayTotal> rows = repository.findDailyTotals(cover, start, end, sensors);
 
         // Serie completa por sensor (dias sem foco = 0), para a mediana nao ficar enviesada.
@@ -102,7 +104,7 @@ public class AnalysisService {
     /** Compara dois periodos (A e B) por sensor. So calcula variacoes quando ha dados nos dois (RN05). */
     public AnalysisDto.PeriodsResponse comparePeriods(Region region, LocalDate startA, LocalDate endA,
                                                       LocalDate startB, LocalDate endB, List<String> sensors) {
-        Region.Cover cover = region.coverFitting(h3.baseResolution(), Region.MAX_AGG_CELLS);
+        Region.Cover cover = region.coverNative(h3.baseResolution(), Region.MAX_AGG_CELLS);
         Map<String, PeriodTotal> a = bySensor(repository.findPeriodTotals(cover, startA, endA, sensors));
         Map<String, PeriodTotal> b = bySensor(repository.findPeriodTotals(cover, startB, endB, sensors));
         int daysA = (int) ChronoUnit.DAYS.between(startA, endA) + 1;
@@ -157,7 +159,7 @@ public class AnalysisService {
     /** Compara o periodo com as mesmas datas de anos anteriores (media historica e anomalia), so com dados suficientes. */
     public AnalysisDto.HistoricalResponse compareHistorical(Region region, LocalDate start, LocalDate end,
                                                             List<String> sensors, int years) {
-        Region.Cover cover = region.coverFitting(h3.baseResolution(), Region.MAX_AGG_CELLS);
+        Region.Cover cover = region.coverNative(h3.baseResolution(), Region.MAX_AGG_CELLS);
         int days = (int) ChronoUnit.DAYS.between(start, end) + 1;
         Map<String, PeriodTotal> current = bySensor(repository.findPeriodTotals(cover, start, end, sensors));
         Map<String, List<AnalysisDto.YearValue>> baseline = new LinkedHashMap<>();

@@ -15,8 +15,6 @@ import java.util.Set;
  */
 public final class H3Index {
 
-    /** A partir deste zoom a API devolve pontos individuais em vez de celulas. */
-    public static final int POINTS_MIN_ZOOM = 9;
 
     private static final H3Core H3 = init();
 

@@ -2,6 +2,7 @@ package com.fireatlas.common.controller;
 
 import com.fireatlas.common.policy.InvalidParameterException;
 import com.fireatlas.common.policy.ParameterError;
+import com.fireatlas.common.policy.UnavailableException;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +35,14 @@ public class ApiExceptionHandler {
     @ExceptionHandler(InvalidParameterException.class)
     public ProblemDetail invalidParameters(InvalidParameterException e) {
         return badRequest(e.getMessage(), e.errors());
+    }
+
+    /** Recurso sem fonte de dados (ex.: pontos e harmonizacao com a gold): 501 com a explicacao. */
+    @ExceptionHandler(UnavailableException.class)
+    public ProblemDetail unavailable(UnavailableException e) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_IMPLEMENTED, e.getMessage());
+        pd.setTitle("Recurso indisponivel com os dados atuais");
+        return pd;
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

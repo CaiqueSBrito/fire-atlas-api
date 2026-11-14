@@ -34,15 +34,14 @@ public class DetectionController {
         this.maxDaysPoints = maxDaysPoints;
     }
 
-    @Operation(summary = "Deteccoes por regiao/periodo/sensor",
-            description = "zoom >= 9 devolve pontos individuais (ate o limite) e aceita bbox OU cells. Abaixo disso "
-                    + "devolve celulas H3 agregadas na resolucao do zoom e EXIGE cells (indices H3 em hexadecimal): "
-                    + "a API nao converte bbox em celulas.")
+    @Operation(summary = "Celulas H3 agregadas por regiao, periodo e sensor",
+            description = "Exige cells (indices H3 em hexadecimal): a API nao converte bbox em celulas. Devolve a "
+                    + "grade na resolucao do zoom (0-6). A gold nao tem pontos individuais.")
     @GetMapping("/detections")
     public ResponseEntity<DetectionDto.DetectionsResponse> detections(
-            @Parameter(description = "minLon,minLat,maxLon,maxLat (alternativa a cells)")
+            @Parameter(description = "nao suportado: use cells")
             @RequestParam(required = false) String bbox,
-            @Parameter(description = "indices H3 em hexadecimal, separados por virgula (alternativa a bbox)")
+            @Parameter(description = "indices H3 em hexadecimal, separados por virgula")
             @RequestParam(required = false) String cells,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
@@ -57,7 +56,7 @@ public class DetectionController {
     }
 
     @Operation(summary = "Contagem de deteccoes por sensor numa regiao e periodo",
-            description = "Aceita bbox OU cells. Contagem exata, com fonte, unidade e metodo em meta.")
+            description = "Exige cells. Soma das deteccoes na grade da gold, com fonte, unidade e metodo em meta.")
     @GetMapping("/detections/count")
     public ResponseEntity<DetectionDto.CountResponse> count(
             @RequestParam(required = false) String bbox,

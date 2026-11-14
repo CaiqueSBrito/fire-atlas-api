@@ -1,10 +1,8 @@
 package com.fireatlas.ingestion.repository;
 
-import com.fireatlas.h3.policy.H3Settings;
 import com.fireatlas.ingestion.entity.ImportLogEntry;
 import com.fireatlas.ingestion.entity.ImportRecord;
-import com.fireatlas.ingestion.integration.DetectionCsvLoader;
-import com.fireatlas.ingestion.integration.DetectionRowParser;
+import com.fireatlas.ingestion.integration.GridFileReader;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.postgresql.PGConnection;
@@ -14,8 +12,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
-import java.io.BufferedReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -23,8 +23,8 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Persistencia da importacao: carga em lote de deteccoes, reagregacao H3 e registro (ingestion_log).
- * Uma {@link Session} e uma transacao: ou tudo que foi lido de um arquivo entra, ou nada entra.
+ * Persistencia da importacao: carga em lote da grade H3 (daily_h3) e registro (ingestion_log).
+ * Uma {@link Session} e uma transacao: ou tudo que foi lido de uma particao entra, ou nada entra.
  */
 @Repository
 public class IngestionRepository {
@@ -33,12 +33,10 @@ public class IngestionRepository {
 
     private final DataSource dataSource;
     private final ObjectMapper mapper;
-    private final H3Settings h3;
 
-    public IngestionRepository(DataSource dataSource, ObjectMapper mapper, H3Settings h3) {
+    public IngestionRepository(DataSource dataSource, ObjectMapper mapper) {
         this.dataSource = dataSource;
         this.mapper = mapper;
-        this.h3 = h3;
     }
 
     public Session begin() throws SQLException {
@@ -95,23 +93,23 @@ public class IngestionRepository {
             this.con.setAutoCommit(false);
         }
 
-        /** Remove o que ja foi importado deste arquivo no periodo (torna a importacao idempotente). */
-        public void deleteDetections(String sourceKey, LocalDate start, LocalDate end) throws SQLException {
+        /** Remove a grade ja importada da resolucao no intervalo de datas (torna a importacao idempotente). */
+        public long deleteGrid(int resolution, LocalDate start, LocalDate end) throws SQLException {
             try (PreparedStatement del = con.prepareStatement(
-                    "DELETE FROM detection WHERE source_file = ? AND acq_date BETWEEN ? AND ?")) {
-                del.setString(1, sourceKey);
+                    "DELETE FROM daily_h3 WHERE res = ? AND acq_date BETWEEN ? AND ?")) {
+                del.setInt(1, resolution);
                 del.setObject(2, start);
                 del.setObject(3, end);
-                del.executeUpdate();
+                return del.executeUpdate();
             }
         }
 
-        /** Le o CSV em streaming, valida, filtra e grava via COPY. */
-        public DetectionCsvLoader.Stats copyDetections(BufferedReader reader, DetectionRowParser parser,
-                                                       DetectionCsvLoader.Filter filter)
-                throws IOException, SQLException {
-            return new DetectionCsvLoader().load(reader, parser, filter,
-                    con.unwrap(PGConnection.class).getCopyAPI());
+        /** Carga em lote (COPY) do CSV gerado por {@link GridFileReader}; devolve as linhas gravadas. */
+        public long copyGrid(Path csv) throws IOException, SQLException {
+            try (var reader = Files.newBufferedReader(csv, StandardCharsets.UTF_8)) {
+                return con.unwrap(PGConnection.class).getCopyAPI().copyIn(
+                        "COPY daily_h3 (" + GridFileReader.COPY_COLUMNS + ") FROM STDIN WITH (FORMAT csv)", reader);
+            }
         }
 
         public void recordCompleted(ImportLogEntry e) throws SQLException, JsonProcessingException {
@@ -138,11 +136,6 @@ public class IngestionRepository {
                 ins.setBoolean(15, e.verified());
                 ins.executeUpdate();
             }
-        }
-
-        /** Reagrega daily_h3 (resolucoes 3 a 8) a partir das deteccoes no intervalo de datas. */
-        public void refreshAggregates(LocalDate from, LocalDate to) throws SQLException {
-            H3Aggregates.refresh(con, from, to, h3.aggResolutions());
         }
 
         public void commit() throws SQLException {

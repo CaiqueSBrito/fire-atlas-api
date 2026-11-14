@@ -10,7 +10,8 @@ import java.util.Map;
 public record IndicatorMeta(String region, LocalDate start, LocalDate end, String source,
                             Map<String, String> units, String method) {
 
-    public static final String SOURCE = "NASA FIRMS: MODIS C6.1 e VIIRS (S-NPP, NOAA-20, NOAA-21), via data lake";
+    public static final String SOURCE = "NASA FIRMS (MODIS C6.1 e VIIRS S-NPP/NOAA-20/NOAA-21), camada ouro do data lake (gold/map_grid): "
+            + "grade H3 por dia e sensor";
 
     /** Unidades comuns: contagens de deteccoes (focos de calor) e FRP em megawatts. */
     public static final Map<String, String> UNITS = Map.of(
