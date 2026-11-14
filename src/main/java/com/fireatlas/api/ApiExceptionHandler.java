@@ -1,5 +1,6 @@
 package com.fireatlas.api;
 
+import com.fireatlas.prediction.PredictionProviderException;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.QueryTimeoutException;
@@ -41,6 +42,15 @@ public class ApiExceptionHandler {
     @ExceptionHandler(AsyncRequestNotUsableException.class)
     public void clientAborted(AsyncRequestNotUsableException e, HttpServletResponse response) {
         log.debug("Cliente encerrou a conexao: {}", e.getMessage());
+    }
+
+    @ExceptionHandler(PredictionProviderException.class)
+    public ProblemDetail predictionProviderFailure(PredictionProviderException e) {
+        log.warn("Falha operacional no provedor preditivo [{}]: {}", e.errorCode(), e.internalDetail());
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
+        pd.setProperty("status", e.errorCode());
+        pd.setProperty("available", false);
+        return pd;
     }
 
     @ExceptionHandler(QueryTimeoutException.class)

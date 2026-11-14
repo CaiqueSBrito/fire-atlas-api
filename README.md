@@ -50,6 +50,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest \
 | GET | `/compare?bbox&start&end&sensor` | Estatisticas por sensor + aviso de nao comparabilidade |
 | GET | `/timeseries?bbox&start&end&sensor` | Serie diaria e dias de atividade incomum |
 | GET | `/harmonized?bbox&start&end` | Harmonizacao MODIS×VIIRS (ver `docs/HARMONIZACAO.md`) |
+| GET | `/predictions?bbox&start&end` | Previsoes de focos (`MODEL_NOT_VALIDATED`; ver `docs/PREDICOES.md`) |
 | GET/PUT | `/preferences` | Regiao favorita do usuario anonimo (cookie `fa_uid`) |
 | GET | `/meta/sources`, `/meta/coverage` | Rastreabilidade e cobertura |
 

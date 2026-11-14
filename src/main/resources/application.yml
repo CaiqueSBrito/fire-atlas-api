@@ -30,8 +30,17 @@ fireatlas:
     max-days-points: 366
     max-days-compare: 400
     max-days-harmonize: 31
+    max-days-predictions: 31
     max-points: 5000
     harmonize-timeout-ms: ${HARMONIZE_TIMEOUT_MS:10000}
+  prediction:
+    enabled: ${PREDICTION_ENABLED:false}
+    endpoint-url: ${PREDICTION_PROVIDER_URL:}
+    protocol-version: ${PREDICTION_PROTOCOL_VERSION:v1}
+    connect-timeout-ms: ${PREDICTION_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${PREDICTION_READ_TIMEOUT_MS:5000}
+    max-response-bytes: ${PREDICTION_MAX_RESPONSE_BYTES:1048576}
+    max-predictions: ${PREDICTION_MAX_PREDICTIONS:5000}
 
 management:
   endpoints:

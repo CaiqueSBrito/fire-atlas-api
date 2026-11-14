@@ -221,4 +221,47 @@ public final class Dto {
     public record Coverage(String sensor, LocalDate minDate, LocalDate maxDate, long detections) {}
 
     public record Preferences(String name, List<Double> bbox, String sensor, Integer zoom, List<Double> center) {}
+
+    public record PredictionResponse(
+            boolean available,
+            String status,
+            String reason,
+            RequestWindow request,
+            @JsonInclude(JsonInclude.Include.ALWAYS) String predictionTarget,
+            @JsonInclude(JsonInclude.Include.ALWAYS) ValidatedHorizon validatedHorizon,
+            @JsonInclude(JsonInclude.Include.ALWAYS) String modelVersion,
+            @JsonInclude(JsonInclude.Include.ALWAYS) Map<String, Object> evaluationMetrics,
+            @JsonInclude(JsonInclude.Include.ALWAYS) List<PredictionPoint> predictions
+    ) {
+        public record RequestWindow(String bbox, LocalDate start, LocalDate end) {}
+
+        public record ValidatedHorizon(
+                String unit,
+                int minLead,
+                int maxLead,
+                String temporalResolution,
+                String spatialResolution
+        ) {}
+
+        public record PredictionPoint(
+                double lat,
+                double lon,
+                Instant forecastTimestamp,
+                Double occurrenceProbability,
+                Double predictedFrpMw,
+                String frpUnit,
+                String confidenceLevel
+        ) {
+            public PredictionPoint(
+                    double lat,
+                    double lon,
+                    Instant forecastTimestamp,
+                    Double occurrenceProbability,
+                    Double predictedFrpMw,
+                    String confidenceLevel) {
+                this(lat, lon, forecastTimestamp, occurrenceProbability, predictedFrpMw,
+                        predictedFrpMw != null ? "MW" : null, confidenceLevel);
+            }
+        }
+    }
 }
