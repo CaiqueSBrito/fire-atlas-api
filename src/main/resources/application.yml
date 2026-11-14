@@ -31,6 +31,7 @@ fireatlas:
     max-days-compare: 400
     max-days-harmonize: 31
     max-points: 5000
+    harmonize-timeout-ms: ${HARMONIZE_TIMEOUT_MS:10000}
 
 management:
   endpoints:

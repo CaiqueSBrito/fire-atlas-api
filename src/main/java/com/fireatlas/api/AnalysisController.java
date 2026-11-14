@@ -2,6 +2,7 @@ package com.fireatlas.api;
 
 import com.fireatlas.query.Anomaly;
 import com.fireatlas.query.DetectionRepository;
+import com.fireatlas.query.HarmonizationService;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -27,13 +28,16 @@ public class AnalysisController {
                     + "harmonizacao para comparar.";
 
     private final DetectionRepository repo;
+    private final HarmonizationService harmonizationService;
     private final int maxDaysCompare;
     private final int maxDaysHarmonize;
 
     public AnalysisController(DetectionRepository repo,
+                              HarmonizationService harmonizationService,
                               @Value("${fireatlas.limits.max-days-compare}") int maxDaysCompare,
                               @Value("${fireatlas.limits.max-days-harmonize}") int maxDaysHarmonize) {
         this.repo = repo;
+        this.harmonizationService = harmonizationService;
         this.maxDaysCompare = maxDaysCompare;
         this.maxDaysHarmonize = maxDaysHarmonize;
     }
@@ -84,7 +88,11 @@ public class AnalysisController {
                 any ? null : "Nenhum foco de calor encontrado para os filtros selecionados."), q.end());
     }
 
-    @Operation(summary = "Harmonizacao MODIS x VIIRS (pareamento espaco-temporal, metodo v0)")
+    @Operation(
+            summary = "Correspondencia exploratoria MODIS x VIIRS (metodo nao aprovado cientificamente)",
+            description = "Retorna resumo descritivo, estado cientifico e indicadores explicitamente indisponiveis. "
+                    + "O detalhamento individual de pares candidatos e opt-in via includeAssociations=true "
+                    + "(limitado por associationsLimit).")
     @GetMapping("/harmonized")
     public ResponseEntity<Dto.HarmonizationResponse> harmonized(
             @RequestParam String bbox,
@@ -92,7 +100,9 @@ public class AnalysisController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
             @RequestParam(defaultValue = "750") int maxDistanceMeters,
             @RequestParam(defaultValue = "180") int maxMinutes,
-            @RequestParam(defaultValue = "20000") int modisSampleCap) {
+            @RequestParam(defaultValue = "20000") int modisSampleCap,
+            @RequestParam(defaultValue = "false") boolean includeAssociations,
+            @RequestParam(defaultValue = "500") int associationsLimit) {
         QueryParams q = QueryParams.of(bbox, start, end, "BOTH", maxDaysHarmonize);
         if (maxDistanceMeters < 100 || maxDistanceMeters > 5000) {
             throw new IllegalArgumentException("maxDistanceMeters deve estar entre 100 e 5000");
@@ -103,22 +113,12 @@ public class AnalysisController {
         if (modisSampleCap < 100 || modisSampleCap > 100_000) {
             throw new IllegalArgumentException("modisSampleCap deve estar entre 100 e 100000");
         }
-        Dto.HarmonizationResponse.Result r = repo.harmonize(q.bbox(), q.start(), q.end(),
-                maxDistanceMeters, maxMinutes, modisSampleCap);
-        Dto.HarmonizationResponse.Method method = new Dto.HarmonizationResponse.Method(
-                "Pareamento espaco-temporal MODIS->VIIRS (v0)",
-                "Para cada deteccao MODIS, conta deteccoes VIIRS a ate maxDistanceMeters e maxMinutes. "
-                        + "Compara FRP do MODIS com a soma do FRP VIIRS dentro do mesmo pixel e reporta taxa de "
-                        + "correspondencia, razao de FRP e correlacao. Campos originais e origem sao preservados.",
-                List.of("Metodo v0: precisa de validacao com a equipe (limiares e razao de FRP).",
-                        "Passagens de satelites diferentes ocorrem em horarios distintos (em 09/2026 sobre o Brasil: "
-                                + "Aqua-VIIRS ~2 h, Terra-VIIRS ~4-5 h; nenhum par a menos de 30 min): "
-                                + "o pareamento e de 'mesmo foco no mesmo periodo', nao de observacao simultanea.",
-                        "Nuvens, angulo de varredura e area do pixel afetam a deteccao nos dois sensores.",
-                        "Amostra limitada a modisSampleCap deteccoes MODIS (campo sampled)."));
-        String msg = r.modisEvaluated() == 0 ? "Nenhum foco MODIS encontrado para os filtros selecionados." : null;
-        return DetectionController.cached(new Dto.HarmonizationResponse(q.bbox().toString(), q.start(), q.end(),
-                new Dto.HarmonizationResponse.Params(maxDistanceMeters, maxMinutes, modisSampleCap), r, method, msg),
-                q.end());
+        if (associationsLimit < 1 || associationsLimit > 5000) {
+            throw new IllegalArgumentException("associationsLimit deve estar entre 1 e 5000");
+        }
+        return DetectionController.cached(harmonizationService.harmonize(
+                q.bbox(), q.start(), q.end(),
+                maxDistanceMeters, maxMinutes, modisSampleCap,
+                includeAssociations, associationsLimit), q.end());
     }
 }

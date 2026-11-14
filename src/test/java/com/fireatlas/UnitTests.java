@@ -40,14 +40,34 @@ class UnitTests {
     }
 
     @Test
-    void confidenceIsHarmonized() {
-        assertEquals("l", DetectionRowParser.confidenceClass("10"));
-        assertEquals("n", DetectionRowParser.confidenceClass("30"));
-        assertEquals("n", DetectionRowParser.confidenceClass("79"));
-        assertEquals("h", DetectionRowParser.confidenceClass("80"));
-        assertEquals("h", DetectionRowParser.confidenceClass("h"));
-        assertEquals("l", DetectionRowParser.confidenceClass("low"));
-        assertEquals("", DetectionRowParser.confidenceClass(""));
+    void confidenceIsHarmonizedBySensorWithoutCrossSensorCoercion() {
+        // MODIS: escala numerica documentada 0..100
+        assertEquals("l", DetectionRowParser.confidenceClass("MODIS", "0"));
+        assertEquals("l", DetectionRowParser.confidenceClass("MODIS", "29"));
+        assertEquals("n", DetectionRowParser.confidenceClass("MODIS", "30"));
+        assertEquals("n", DetectionRowParser.confidenceClass("MODIS", "79"));
+        assertEquals("h", DetectionRowParser.confidenceClass("MODIS", "80"));
+        assertEquals("h", DetectionRowParser.confidenceClass("MODIS", "100"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", "101"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", "150"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", "-1"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", "hacked"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", "h"));
+        assertEquals("", DetectionRowParser.confidenceClass("MODIS", ""));
+
+        // VIIRS: categorias documentadas l/n/h e low/nominal/high
+        assertEquals("l", DetectionRowParser.confidenceClass("VIIRS", "l"));
+        assertEquals("l", DetectionRowParser.confidenceClass("VIIRS", "low"));
+        assertEquals("n", DetectionRowParser.confidenceClass("VIIRS", "n"));
+        assertEquals("n", DetectionRowParser.confidenceClass("VIIRS", "nominal"));
+        assertEquals("h", DetectionRowParser.confidenceClass("VIIRS", "h"));
+        assertEquals("h", DetectionRowParser.confidenceClass("VIIRS", "HIGH"));
+        assertEquals("", DetectionRowParser.confidenceClass("VIIRS", "hacked"));
+        assertEquals("", DetectionRowParser.confidenceClass("VIIRS", "low_fake"));
+        assertEquals("", DetectionRowParser.confidenceClass("VIIRS", "80"));
+        assertEquals("", DetectionRowParser.confidenceClass("VIIRS", ""));
+
+        assertEquals("", DetectionRowParser.confidenceClass("UNKNOWN", "80"));
     }
 
     @Test
@@ -71,6 +91,151 @@ class UnitTests {
         assertThrows(IllegalArgumentException.class, () -> BBox.parse("10,0,5,1"));
         assertThrows(IllegalArgumentException.class, () -> BBox.parse("0,0,200,1"));
         assertThrows(IllegalArgumentException.class, () -> BBox.parse("a,b,c,d"));
+        assertThrows(IllegalArgumentException.class, () -> BBox.parse("NaN,0,1,1"));
+        assertThrows(IllegalArgumentException.class, () -> BBox.parse("0,Infinity,1,1"));
+        assertThrows(IllegalArgumentException.class, () -> BBox.parse("-Infinity,0,1,1"));
+    }
+
+    @Test
+    void parserPreservesMissingFrpAndRejectsInvalidCoordsOrTime() {
+        var p = new DetectionRowParser(VIIRS_HEADER, "VIIRS", "VIIRS_NOAA-20", "bronze/raw/file,1.csv");
+        // FRP vazia permanece ausente (string vazia -> NULL no COPY)
+        var missingFrp = p.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,nominal,2.0NRT,281.0,,N");
+        assertNotNull(missingFrp);
+        assertTrue(missingFrp.csvLine().contains(",,nominal,n,N,2.0NRT,VIIRS_NOAA-20,\"bronze/raw/file,1.csv\""));
+
+        // Coordenadas fora da faixa, nao finitas, horario invalido ou FRP nao finita sao rejeitados como malformados
+        assertNull(p.parse("NaN,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(p.parse("95.0,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(p.parse("-3.5,185.0,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(p.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,2599,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(p.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,NaN,N"));
+    }
+
+    @Test
+    void parserRejectsNegativeFrpInvalidUtcTimeAndInvalidConfidenceBySensor() {
+        var modisHeader = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version,bright_t31,frp,daynight";
+        var modis = new DetectionRowParser(modisHeader, "MODIS", "MODIS_C6.1", "m.csv");
+        var viirs = new DetectionRowParser(VIIRS_HEADER, "VIIRS", "VIIRS_NOAA-20", "v.csv");
+
+        // FRP negativa ou -0 rejeitada; 0.0 aceita; vazia preservada como ausente
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,-0.01,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,-5,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,-0.0,N"));
+        assertNotNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,n,2.0NRT,281.0,0.0,N"));
+
+        // Horario UTC estritamente 0000..2359
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,2400,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,2360,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,-100,N20,VIIRS,n,2.0NRT,281.0,1.0,N"));
+        var midnight = viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0,N20,VIIRS,n,2.0NRT,281.0,1.0,N");
+        var endOfDay = viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,2359,N20,VIIRS,n,2.0NRT,281.0,1.0,N");
+        assertNotNull(midnight);
+        assertTrue(midnight.csvLine().contains("2026-11-12T00:00:00Z"));
+        assertNotNull(endOfDay);
+        assertTrue(endOfDay.csvLine().contains("2026-11-12T23:59:00Z"));
+
+        // Confianca invalida ou fora da escala do sensor e rejeitada; vazia e preservada como ausente
+        assertNull(modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,150,6.1NRT,290.0,11.0,N"));
+        assertNull(modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,-1,6.1NRT,290.0,11.0,N"));
+        assertNull(modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,hacked,6.1NRT,290.0,11.0,N"));
+        assertNull(modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,h,6.1NRT,290.0,11.0,N"));
+        assertNotNull(modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,,6.1NRT,290.0,11.0,N"));
+        var validModis = modis.parse("-3.23,-53.91,308.0,1.1,1.1,2026-11-12,0709,A,100,6.1NRT,290.0,11.0,N");
+        assertNotNull(validModis);
+        assertTrue(validModis.csvLine().contains(",100,h,N,"));
+        assertEquals(64, validModis.sourceRowHash().length());
+        assertEquals(64, validModis.sourceSemanticHash().length());
+        assertTrue(validModis.toStagedCsvLine(2)
+                .endsWith(",2," + validModis.sourceRowHash() + "," + validModis.sourceSemanticHash()));
+
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,hacked,2.0NRT,281.0,1.0,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,low_fake,2.0NRT,281.0,1.0,N"));
+        assertNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,80,2.0NRT,281.0,1.0,N"));
+        assertNotNull(viirs.parse("-3.5,-53.5,305.0,0.4,0.4,2026-11-12,0001,N20,VIIRS,,2.0NRT,281.0,1.0,N"));
+    }
+
+    @Test
+    void semanticHashReflectsHeaderInterpretationWhilePreservingRawRowHash() {
+        String hOriginal = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,frp,confidence,version,bright_t31,daynight";
+        String hSwapped = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,frp,version,bright_t31,daynight";
+        String hWithExtraCol = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,frp,version,bright_t31,daynight,instrument";
+
+        String sameRawLine = "-3.500,-53.500,310.0,1.0,1.0,2026-11-12,0709,A,10,80,6.1NRT,290.0,N";
+        String equivalentValuesLine = "-3.5,-53.5,310.00,1.0,1.0,2026-11-12,709,A,80,10.00,6.1NRT,290.0,N,MODIS_IGNORED";
+
+        var pOrig = new DetectionRowParser(hOriginal, "MODIS", "MODIS_C6.1", "f.csv");
+        var pSwap = new DetectionRowParser(hSwapped, "MODIS", "MODIS_C6.1", "f.csv");
+        var pExtra = new DetectionRowParser(hWithExtraCol, "MODIS", "MODIS_C6.1", "f.csv");
+
+        var rOrig = pOrig.parse(sameRawLine);
+        var rFlipped = pSwap.parse(sameRawLine);
+        var rEquiv = pExtra.parse(equivalentValuesLine);
+
+        assertNotNull(rOrig);
+        assertNotNull(rFlipped);
+        assertNotNull(rEquiv);
+
+        // Mesmo texto bruto -> mesmo sourceRowHash, porem significados cientificos distintos -> sourceSemanticHash diferente
+        assertEquals(rOrig.sourceRowHash(), rFlipped.sourceRowHash());
+        assertNotEquals(rOrig.sourceSemanticHash(), rFlipped.sourceSemanticHash());
+        assertNotEquals(rOrig.csvLine(), rFlipped.csvLine());
+
+        // Valores efetivos equivalentes mesmo com colunas trocadas / zeros a esquerda / extra -> sourceRowHash distinto, semanticHash igual
+        assertNotEquals(rOrig.sourceRowHash(), rEquiv.sourceRowHash());
+        assertEquals(rOrig.sourceSemanticHash(), rEquiv.sourceSemanticHash());
+    }
+
+    @Test
+    void c2f03Float32CanonicalRealAvoidsDoubleRounding() {
+        String header = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version,bright_t31,frp,daynight";
+        var parser = new DetectionRowParser(header, "MODIS", "MODIS_C6.1", "c2f03.csv");
+
+        var one = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0,N");
+        var tieToEven = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.000000059604644775390625,N");
+        var adversarialUp = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0000000596046447753906251,N");
+        var oddTieUp = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.000000178813934326171875,N");
+        var belowOddTie = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0000001788139343261718749,N");
+        var subnormal = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1e-40,N");
+        var minSubnormal = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.401298464e-45,N");
+        var zeroFrp = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,0.0,N");
+        var nullFrp = parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,,N");
+        var negZeroBrightness = parser.parse("-3.5,-53.5,-0.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0,N");
+        var posZeroBrightness = parser.parse("-3.5,-53.5,0.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0,N");
+        var firmsA = parser.parse("-3.41340,-53.52631,321.45,1.23,1.07,2026-11-12,0709,T,74,6.1NRT,295.12,18.64,N");
+        var firmsB = parser.parse("-3.41340,-53.52631,321.45,1.23,1.07,2026-11-12,0709,T,74,6.1NRT,295.12,18.640002,N");
+
+        assertNotNull(one);
+        assertNotNull(tieToEven);
+        assertNotNull(adversarialUp);
+        assertNotNull(oddTieUp);
+        assertNotNull(belowOddTie);
+        assertNotNull(subnormal);
+        assertNotNull(minSubnormal);
+        assertNotNull(zeroFrp);
+        assertNotNull(nullFrp);
+        assertNotNull(negZeroBrightness);
+        assertNotNull(posZeroBrightness);
+        assertNotNull(firmsA);
+        assertNotNull(firmsB);
+
+        assertEquals(one.sourceSemanticHash(), tieToEven.sourceSemanticHash());
+        assertNotEquals(one.sourceSemanticHash(), adversarialUp.sourceSemanticHash(),
+                "C2-F03: 1.0000000596046447753906251 (real 3f800001) nao pode receber o mesmo hash semantico de 1.0 (3f800000)");
+        assertEquals(adversarialUp.sourceSemanticHash(), belowOddTie.sourceSemanticHash());
+        assertNotEquals(adversarialUp.sourceSemanticHash(), oddTieUp.sourceSemanticHash());
+        assertNotEquals(zeroFrp.sourceSemanticHash(), subnormal.sourceSemanticHash());
+        assertNotEquals(zeroFrp.sourceSemanticHash(), minSubnormal.sourceSemanticHash());
+        assertNotEquals(zeroFrp.sourceSemanticHash(), nullFrp.sourceSemanticHash(), "FRP zero e FRP NULL devem permanecer distintos");
+        assertEquals(negZeroBrightness.sourceSemanticHash(), posZeroBrightness.sourceSemanticHash());
+        assertNotEquals(firmsA.sourceSemanticHash(), firmsB.sourceSemanticHash());
+
+        // Overflow/underflow fora da faixa float32 e nao finitos devem ser rejeitados
+        assertNull(parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1e39,N"));
+        assertNull(parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1e-50,N"));
+        assertNull(parser.parse("-3.5,-53.5,1e39,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,1.0,N"));
+        assertNull(parser.parse("-3.5,-53.5,310.0,1.0,1.0,2026-11-12,0709,A,80,6.1NRT,290.0,Infinity,N"));
+        assertEquals("v2-ieee754-direct", DetectionRowParser.SEMANTIC_HASH_VERSION);
     }
 
     @Test

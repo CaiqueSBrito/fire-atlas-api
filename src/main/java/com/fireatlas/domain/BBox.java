@@ -4,6 +4,10 @@ package com.fireatlas.domain;
 public record BBox(double minLon, double minLat, double maxLon, double maxLat) {
 
     public BBox {
+        if (!Double.isFinite(minLon) || !Double.isFinite(minLat)
+                || !Double.isFinite(maxLon) || !Double.isFinite(maxLat)) {
+            throw new IllegalArgumentException("bbox deve conter coordenadas numericas finitas");
+        }
         if (minLon < -180 || maxLon > 180 || minLat < -90 || maxLat > 90) {
             throw new IllegalArgumentException("bbox fora dos limites (lon -180..180, lat -90..90)");
         }

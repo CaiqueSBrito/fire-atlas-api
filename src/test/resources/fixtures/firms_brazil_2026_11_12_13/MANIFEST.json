@@ -1,0 +1,94 @@
+{
+  "description": "Curated real NASA FIRMS 24h active-fire slice for reproducible exploratory spatial-temporal pairing verification (NOT scientific validation of harmonization).",
+  "downloadedAtUtc": "2026-11-13T22:26:29Z",
+  "selectionCriteria": {
+    "bbox": [-54.0, -4.0, -53.0, -3.0],
+    "region": "Para, Brazil (South America)",
+    "periodStartUtc": "2026-11-12",
+    "periodEndUtc": "2026-11-13",
+    "reason": "Contains real MODIS C6.1 (Aqua + Terra) and VIIRS C2 (NOAA-20 + NOAA-21) detections after S-NPP end-of-series (2026-11-02), including N:M overlapping detections and non-matching detections."
+  },
+  "sources": [
+    {
+      "file": "MODIS_C6_1_South_America_24h.csv",
+      "product": "MODIS_C6.1",
+      "sensor": "MODIS",
+      "satellitesObserved": ["A", "T"],
+      "versionObserved": "6.1NRT",
+      "officialUrl": "https://firms.modaps.eosdis.nasa.gov/data/active_fire/modis-c6.1/csv/MODIS_C6_1_South_America_24h.csv",
+      "upstreamLastModified": "Fri, 13 Nov 2026 21:47:33 GMT",
+      "upstreamSha256": "7ac663cb0f0b2f39e7592a5b795c6f665e8339591dc258170a9d805864170750",
+      "fixtureSha256": "ce18f9c4d99a460aa9d0100b270d55250537171e7f1cc70eddf4e2b176ee17ed",
+      "fixtureRows": 31
+    },
+    {
+      "file": "J1_VIIRS_C2_South_America_24h.csv",
+      "product": "VIIRS_NOAA-20",
+      "sensor": "VIIRS",
+      "satellitesObserved": ["N20"],
+      "versionObserved": "2.0NRT",
+      "officialUrl": "https://firms.modaps.eosdis.nasa.gov/data/active_fire/noaa-20-viirs-c2/csv/J1_VIIRS_C2_South_America_24h.csv",
+      "upstreamLastModified": "Fri, 13 Nov 2026 21:41:20 GMT",
+      "upstreamSha256": "2f922790001ef2de348aa8143ed893c9698f2bffd80e611592568da08e8f1741",
+      "fixtureSha256": "200e1cc6f8e59c0d11384b11ffa1085c807c72801efaaf047942ff7bf8aaa68f",
+      "fixtureRows": 82
+    },
+    {
+      "file": "J2_VIIRS_C2_South_America_24h.csv",
+      "product": "VIIRS_NOAA-21",
+      "sensor": "VIIRS",
+      "satellitesObserved": ["N21"],
+      "versionObserved": "2.0NRT",
+      "officialUrl": "https://firms.modaps.eosdis.nasa.gov/data/active_fire/noaa-21-viirs-c2/csv/J2_VIIRS_C2_South_America_24h.csv",
+      "upstreamLastModified": "Fri, 13 Nov 2026 21:44:33 GMT",
+      "upstreamSha256": "2788337f617ba4a54d1f3a2a9c5208d8872ae1c1626207eb922bfa6ccbbc952e",
+      "fixtureSha256": "0d152e191e8a5a98369f51c9475c424ba39d1c19fb8ed5a600ecd9b2ed2c7d5b",
+      "fixtureRows": 83
+    }
+  ],
+  "independentReferenceCalculation": {
+    "method": "WGS84 Vincenty inverse geodesic formula + UTC Instant arithmetic computed independently of PostgreSQL/PostGIS",
+    "params": {
+      "maxDistanceMeters": 750,
+      "maxMinutes": 180
+    },
+    "expectedExploratoryCounts": {
+      "modisTotalInWindow": 31,
+      "viirsTotalInWindow": 165,
+      "modisWithCandidateMatch": 12,
+      "distinctViirsMatched": 44,
+      "candidateAssociationsTotal": 58
+    },
+    "sampleExpectedPairs": {
+      "closest": {
+        "modisLat": -3.4134,
+        "modisLon": -53.52631,
+        "modisTs": "2026-11-12T07:09:00Z",
+        "modisFrp": 8.75,
+        "modisConfidenceRaw": "68",
+        "viirsLat": -3.41376,
+        "viirsLon": -53.52631,
+        "viirsTs": "2026-11-12T04:46:00Z",
+        "viirsFrp": 6.78,
+        "viirsConfidenceRaw": "nominal",
+        "vincentyDistanceMeters": 39.80815649897341,
+        "timeOffsetSeconds": -8580
+      },
+      "farthestWithin750m": {
+        "modisLat": -3.23049,
+        "modisLon": -53.91476,
+        "modisTs": "2026-11-12T07:09:00Z",
+        "modisFrp": 14.61,
+        "modisConfidenceRaw": "84",
+        "viirsLat": -3.23663,
+        "viirsLon": -53.91758,
+        "viirsTs": "2026-11-12T05:29:00Z",
+        "viirsFrp": 4.99,
+        "viirsConfidenceRaw": "nominal",
+        "vincentyDistanceMeters": 747.8000817269235,
+        "timeOffsetSeconds": -6000
+      }
+    },
+    "scientificApprovalStatus": "METHOD_NOT_APPROVED"
+  }
+}
