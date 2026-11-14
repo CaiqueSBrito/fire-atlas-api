@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: fire-atlas-gold-api
+  datasource:
+    # esquema proprio "gold": nao divide tabelas nem historico do Flyway com o app principal
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/fireatlas?currentSchema=gold}
+    username: ${DB_USER:fireatlas}
+    password: ${DB_PASSWORD:fireatlas}
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    enabled: true
+    schemas: gold
+    default-schema: gold
+    create-schemas: true
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: ${SERVER_PORT:8082}   # o app principal usa 8080/8081
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 1024
+
+fireatlas:
+  h3:
+    # Maior resolucao H3 da fonte (a gold entrega de 0 a 6); consultas por celulas mais finas sobem para ela.
+    base-resolution: ${H3_BASE_RESOLUTION:6}
+  cors-origins: ${CORS_ORIGINS:http://localhost:3000}
+  ingest:
+    # Fonte unica: camada ouro (tabela Delta, uma linha por celula H3, dia e sensor). A API so consome o H3 pronto.
+    table: ${GOLD_TABLE:gold/map_grid/}
+  s3:
+    bucket: ${DATALAKE_BUCKET:}
+    region: ${AWS_REGION:us-east-2}
+  limits:
+    max-days-points: 366   # limite de dias das consultas de detecoes e contagem
+    max-days-compare: 400
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
