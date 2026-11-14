@@ -18,7 +18,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Rotina de importacao em linha de comando (profile "ingest"): le a camada ouro (tabela Delta gold/map_grid) do
+ * Rotina de importacao em linha de comando (profile "ingest-gold"): le a camada ouro (tabela Delta gold/map_grid) do
  * data lake e grava a grade H3 no PostGIS. E uma camada de entrada, como a API REST: so interpreta os argumentos e
  * chama o {@link GoldImportService}. Se a importacao nao for concluida, o processo termina com erro (codigo de saida
  * diferente de zero).

@@ -4,12 +4,12 @@ API (Spring Boot) de focos de calor **MODIS e VIIRS** para o NASA Space Apps 202
 ("Harmonization of MODIS and VIIRS Hot Spots"). Plataforma aberta, sem login.
 
 ```
-Data lake (S3, bronze/raw CSV da FIRMS)
-        │  ingestao filtrada por regiao + periodo (profile "ingest")
+Data lake (S3, Delta Lake do time de dados: prata/silver e gold/*)
+        │  importacao por periodo (profiles "ingest-silver" e "ingest-gold")
         ▼
 PostgreSQL + PostGIS  ── detection (particionada por ano, GiST + BRIN)
         │               ├─ daily_grid (grade 0,1°/dia pre-agregada)
-        │               ├─ ingestion_log (proveniencia)
+        │               ├─ lake_import_log (proveniencia das importacoes)
         ▼               └─ user_preference (perfil anonimo via cookie)
 API REST (/api/v1) ──► Frontend Next.js
 ```
@@ -28,18 +28,18 @@ Documentacao interativa: `http://localhost:8080/swagger-ui.html` (OpenAPI em `/v
 ## Carregar dados do data lake
 
 As credenciais AWS vem do perfil local (`aws configure`) ou de IAM Role — **nunca** coloque chaves no codigo ou no `.env`.
+Os dados vem das tabelas Delta publicadas pelo time de dados no S3 (veja a secao "Integracao com o data lake" abaixo):
+a **prata** (`prata/silver`, um foco por linha) alimenta `detection`, e o **gold** alimenta o mapa agregado, os lugares, a
+previsao e a atividade harmonizada.
 
 ```bash
 export DATALAKE_BUCKET=<bucket>   # PowerShell: $env:DATALAKE_BUCKET="<bucket>"
-mvn spring-boot:run -Dspring-boot.run.profiles=ingest \
-  -Dspring-boot.run.arguments="--ingest.start=2024-08-01 --ingest.end=2024-09-30 --ingest.bbox=-74,-34,-34,6 --ingest.sensors=MODIS,VIIRS"
+mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver   -Dspring-boot.run.arguments="--ingest.start=2026-11-10 --ingest.end=2026-11-12"
 ```
 
-- Cada CSV anual e lido em streaming e so entram as linhas dentro da regiao/periodo (COPY em lote).
-- Cargas repetidas sao idempotentes por arquivo e periodo.
-- `--ingest.products=MODIS_C6.1,VIIRS_S-NPP` restringe os produtos.
-- Contingencia (CSV local): `--ingest.file=amostra.csv --ingest.product=VIIRS_S-NPP`.
-- Cada carga registra arquivo de origem, regiao, periodo e contagens em `ingestion_log` (`GET /api/v1/meta/sources`).
+- So entram as linhas dentro do periodo (e da regiao, se informada); cada arquivo do Delta e uma transacao idempotente.
+- Cada importacao registra arquivo de origem, regiao, periodo, contagens e linhas rejeitadas em `lake_import_log`
+  (`GET /api/v1/meta/sources` lista as da prata).
 
 ## Endpoints (`/api/v1`)
 
@@ -76,12 +76,11 @@ mvn test
 
 ## Integracao com o data lake do time de dados (Delta Lake)
 
-Alem do CSV da FIRMS, a API importa as tabelas Delta publicadas pelo time de dados. O backend so **le** e **consulta**;
+A API importa as tabelas Delta publicadas pelo time de dados. O backend so **le** e **consulta**;
 nao converte coordenadas em H3 (o indice H3 vem pronto do pipeline) e nao recalcula previsao nem harmonizacao.
 
 | Profile | Fonte | Destino | Comando |
 |---|---|---|---|
-| `ingest` | CSV da FIRMS (bronze) | `detection` | secao "Carregar dados do data lake" |
 | `ingest-gold` | `gold/map_grid`, `gold/h3_places`, `gold/forecast`, `gold/harmonized` | `daily_h3`, `h3_place`, `forecast`, `harmonized_cell`, `harmonized_availability` | abaixo |
 | `ingest-silver` | `prata/silver` (um foco por linha) | `detection` (com `record_id` e `h3_r6`) | abaixo |
 
@@ -97,7 +96,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver \
 
 - So os arquivos **ativos** do Delta entram (log + checkpoint). Cada arquivo e uma transacao, idempotente, conferida com o
   `numRecords` do log; falhas e linhas rejeitadas (ex.: FRP negativo) ficam em `lake_import_log`.
-- Prata: a identidade do foco e o `record_id`; reimportar nao duplica e as linhas vindas do CSV (sem `record_id`) nao sao tocadas.
+- Prata: a identidade do foco e o `record_id`; reimportar nao duplica.
 - Migrations: V7–V9 (gold), V10 (identidade da prata e `forecast_run`).
 
 ### Rotas gold (`/api/v2`)

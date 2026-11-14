@@ -208,4 +208,29 @@ class SilverImportAcceptanceTest {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM lake_import_log WHERE status = 'FAILED'",
                 Integer.class));
     }
+
+    @Test
+    @Order(7)
+    void classes_de_confianca_por_sensor_e_lista_de_fontes(@TempDir Path dir) throws Exception {
+        clean();
+        SilverFixtures.write(dir, List.of(
+                SilverFixtures.Row.modis(SHA, 1, "Aqua", -3.5, -53.5, "2026-11-12", "10:00:00", 1.0, 0, CELL),
+                SilverFixtures.Row.modis(SHA, 2, "Aqua", -3.6, -53.5, "2026-11-12", "10:00:00", 1.0, 29, CELL),
+                SilverFixtures.Row.modis(SHA, 3, "Aqua", -3.7, -53.5, "2026-11-12", "10:00:00", 1.0, 30, CELL),
+                SilverFixtures.Row.modis(SHA, 4, "Aqua", -3.8, -53.5, "2026-11-12", "10:00:00", 1.0, 79, CELL),
+                SilverFixtures.Row.modis(SHA, 5, "Aqua", -3.9, -53.5, "2026-11-12", "10:00:00", 1.0, 80, CELL),
+                SilverFixtures.Row.modis(SHA, 6, "Aqua", -3.95, -53.5, "2026-11-12", "10:00:00", 1.0, 100, CELL),
+                SilverFixtures.Row.viirs(SHA, 7, "NOAA-20", -4.0, -53.5, "2026-11-12", "10:00:00", 1.0, "l", CELL),
+                SilverFixtures.Row.viirs(SHA, 8, "NOAA-20", -4.1, -53.5, "2026-11-12", "10:00:00", 1.0, "n", CELL),
+                SilverFixtures.Row.viirs(SHA, 9, "NOAA-20", -4.2, -53.5, "2026-11-12", "10:00:00", 1.0, "h", CELL)),
+                null);
+        service(dir).run(period("2026-11-12", "2026-11-12", null));
+        String classes = jdbc.queryForObject("SELECT string_agg(confidence_class, '' ORDER BY record_id) FROM detection",
+                String.class);
+        assertEquals("llnnhhlnh", classes);   // MODIS 0-29 l, 30-79 n, 80-100 h; VIIRS l/n/h
+
+        mvc.perform(get("/api/v1/meta/sources")).andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].product").value("silver"))
+                .andExpect(jsonPath("$[0].rowsLoaded").value(9));
+    }
 }

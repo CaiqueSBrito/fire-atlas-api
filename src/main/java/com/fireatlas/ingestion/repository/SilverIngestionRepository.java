@@ -2,7 +2,6 @@ package com.fireatlas.ingestion.repository;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fireatlas.ingestion.cli.IngestionRunner;
 import org.postgresql.PGConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,7 +105,7 @@ public class SilverIngestionRepository {
 
         /** Recalcula a grade diaria (daily_grid) do intervalo, como na carga do CSV. */
         public void refreshGrid(LocalDate from, LocalDate to) throws SQLException {
-            IngestionRunner.refreshGrid(con, from, to);
+            SilverIngestionRepository.refreshGrid(con, from, to);
         }
 
         public void recordCompleted(String sourceKey, String bbox, LocalDate start, LocalDate end, long scanned,
@@ -149,6 +148,29 @@ public class SilverIngestionRepository {
         @Override
         public void close() throws SQLException {
             con.close();
+        }
+    }
+
+    /** Recalcula a grade diaria (0,1 grau) dos dias afetados a partir de detection, na mesma transacao. */
+    static void refreshGrid(java.sql.Connection con, LocalDate from, LocalDate to) throws SQLException {
+        try (PreparedStatement del = con.prepareStatement(
+                "DELETE FROM daily_grid WHERE acq_date BETWEEN ? AND ?")) {
+            del.setObject(1, from);
+            del.setObject(2, to);
+            del.executeUpdate();
+        }
+        try (PreparedStatement ins = con.prepareStatement("""
+                INSERT INTO daily_grid (acq_date, sensor, cx, cy, n, frp_sum, frp_max)
+                SELECT acq_date, sensor,
+                       GREATEST(0, LEAST(floor((lon + 180) * 10)::int, 3599)),
+                       GREATEST(0, LEAST(floor((lat + 90) * 10)::int, 1799)),
+                       count(*), coalesce(sum(frp), 0), max(frp)
+                FROM detection
+                WHERE acq_date BETWEEN ? AND ?
+                GROUP BY 1, 2, 3, 4""")) {
+            ins.setObject(1, from);
+            ins.setObject(2, to);
+            ins.executeUpdate();
         }
     }
 }

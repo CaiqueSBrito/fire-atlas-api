@@ -1,5 +1,11 @@
 # Harmonizacao MODIS × VIIRS — Contrato e Estado Cientifico (NASA-018)
 
+> **Atualizacao: fonte de dados.** A importacao do CSV da FIRMS (bronze) foi removida: os focos individuais de `detection` vem agora
+> somente da prata (`prata/silver`, Delta Lake), com `record_id` como identidade (veja o README). Os trechos abaixo sobre hash por linha,
+> revisao de arquivo CSV, staging e locks de ingestao descrevem o fluxo antigo; os campos de proveniencia continuam existindo na
+> tabela, e nas linhas da prata `sourceRowHash` e `sourceSemanticHash` ficam nulos/`UNKNOWN`.
+
+
 > **Estado atual:** `METHOD_NOT_APPROVED` (correspondencia exploratoria `exploratory-spatial-temporal-v0.2`; **nao possui aprovacao cientifica**).
 
 ## 1. Diferencas Fisicas e Operacionais entre Sensores

@@ -492,7 +492,8 @@ public class DetectionRepository {
         return jdbc.getJdbcTemplate().query("""
                 SELECT product, sensor, source_key, bbox, period_start, period_end, rows_loaded,
                        min_date, max_date, loaded_at
-                FROM ingestion_log ORDER BY loaded_at DESC LIMIT 500
+                FROM lake_import_log WHERE product = 'silver' AND status = 'COMPLETED'
+                ORDER BY loaded_at DESC LIMIT 500
                 """, (rs, i) -> new Dto.SourceInfo(rs.getString("product"), rs.getString("sensor"),
                 rs.getString("source_key"), rs.getString("bbox"),
                 rs.getObject("period_start", LocalDate.class), rs.getObject("period_end", LocalDate.class),
