@@ -48,7 +48,8 @@ public final class SqlFilters {
                 + placeCondition(c.place()) + ")";
     }
 
-    private static String placeCondition(Region.Place place) {
+    /** Condicao sobre h3_place (alias pl) para o lugar; os parametros vem de {@link #regionParams}. */
+    public static String placeCondition(Region.Place place) {
         return switch (place.kind()) {
             case COUNTRY -> "(pl.country_iso_a2 = :placeValue OR pl.country_code = :placeValue)";
             case CONTINENT -> "pl.continent = :placeValue";

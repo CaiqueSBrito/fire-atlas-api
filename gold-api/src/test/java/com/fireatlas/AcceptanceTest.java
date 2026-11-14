@@ -4,6 +4,7 @@ import com.fireatlas.h3.policy.H3Index;
 import com.fireatlas.ingestion.repository.IngestionRepository;
 import com.fireatlas.ingestion.service.CatalogImportService;
 import com.fireatlas.ingestion.service.GoldImportService;
+import com.fireatlas.ingestion.service.HarmonizedImportService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -746,5 +747,256 @@ class AcceptanceTest {
         assertEquals("FAILED", jdbc.queryForObject("SELECT status FROM ingestion_log ORDER BY id DESC LIMIT 1",
                 String.class));
         seedCatalog();
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Atividade de fogo harmonizada (gold/harmonized)
+    // ------------------------------------------------------------------------------------------------
+
+    private boolean activitySeeded;
+
+    private static String two(int d) {
+        return d < 10 ? "0" + d : String.valueOf(d);
+    }
+
+    /**
+     * Celula A (Brasil) em setembro de 2023, 2024 e 2025 com 1,0 / 2,0 / 3,0 por dia (somas 30, 60 e 90; mediana 60) e
+     * setembro de 2026 com 2,0 por dia, menos os dias 10 a 12 (contributing = 0, sem dado): soma 54 em 27 dias.
+     * Agosto de 2026 com 1,5 por dia. Portugal so em setembro de 2026 (5,0 por dia). Niveis 3 e 4.
+     */
+    private void seedActivity() throws Exception {
+        seedCatalog();
+        if (activitySeeded) return;
+        jdbc.update("DELETE FROM harmonized_cell");
+        jdbc.update("DELETE FROM harmonized_availability");
+        List<CatalogFixtures.HarmRow> rows = new ArrayList<>();
+        int[] years = {2023, 2024, 2025};
+        for (int res : new int[]{3, 4}) {
+            long a = TestH3.cell(-10.5, -55.5, res);
+            for (int i = 0; i < years.length; i++) {
+                for (int d = 1; d <= 30; d++) {
+                    rows.add(new CatalogFixtures.HarmRow(res, a, years[i] + "-09-" + two(d), i + 1.0, 2));
+                }
+            }
+            for (int d = 1; d <= 30; d++) {
+                boolean none = d >= 10 && d <= 12;
+                rows.add(new CatalogFixtures.HarmRow(res, a, "2026-09-" + two(d), none ? 0.0 : 2.0, none ? 0 : 3));
+            }
+            for (int d = 1; d <= 31; d++) {
+                rows.add(new CatalogFixtures.HarmRow(res, a, "2026-08-" + two(d), 1.5, 3));
+            }
+        }
+        long p4 = TestH3.cell(38.7, -9.1, 4);
+        for (int d = 1; d <= 30; d++) rows.add(new CatalogFixtures.HarmRow(4, p4, "2026-09-" + two(d), 5.0, 2));
+        Path dir = java.nio.file.Files.createTempDirectory("fireatlas-it-harmonized-");
+        CatalogFixtures.writeHarmonized(dir, rows);
+        CatalogFixtures.writeAvailability(dir, List.of(
+                new CatalogFixtures.AvailRow("2026-09-01", "terra", 120, 100.0, true, true),
+                new CatalogFixtures.AvailRow("2026-09-01", "aqua", 130, 110.0, true, true),
+                new CatalogFixtures.AvailRow("2026-09-01", "snpp", 0, 90.0, false, false),
+                new CatalogFixtures.AvailRow("2026-09-02", "aqua", 125, 110.0, true, true)));
+        var svc = new HarmonizedImportService(ingestionRepository, new GoldFixtures.LocalStorage(dir));
+        var cells = svc.importCells(LocalDate.parse("2023-01-01"), LocalDate.parse("2026-12-31"), null);
+        assertFalse(cells.failed());
+        assertTrue(cells.files().stream().allMatch(GoldImportService.FileResult::verified));
+        assertFalse(svc.importAvailability(LocalDate.parse("2023-01-01"), LocalDate.parse("2026-12-31")).failed());
+        activitySeeded = true;
+    }
+
+    @Test
+    @Order(22)
+    void importa_atividade_harmonizada_com_contributing_zero_valido_e_idempotente() throws Exception {
+        seedActivity();
+        assertEquals(true, jdbc.queryForObject("SELECT bool_and(verified) FROM ingestion_log WHERE product IN "
+                + "('harmonized_cells', 'harmonized_availability')", Boolean.class));
+        // contributing = 0 e valido (sem dado), nao e rejeicao: 3 dias x 2 niveis
+        assertEquals(6, jdbc.queryForObject("SELECT count(*) FROM harmonized_cell WHERE contributing = 0",
+                Integer.class));
+        long cells = jdbc.queryForObject("SELECT count(*) FROM harmonized_cell", Long.class);
+        long avail = jdbc.queryForObject("SELECT count(*) FROM harmonized_availability", Long.class);
+        assertEquals(4L, avail);
+        activitySeeded = false;
+        seedActivity();
+        assertEquals(cells, jdbc.queryForObject("SELECT count(*) FROM harmonized_cell", Long.class));
+        assertEquals(avail, jdbc.queryForObject("SELECT count(*) FROM harmonized_availability", Long.class));
+    }
+
+    @Test
+    @Order(23)
+    void calendario_harmonizado_traz_rotulo_avisos_e_dia_sem_dado_sem_numero() throws Exception {
+        seedActivity();
+        String cell3 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 3));
+        mvc.perform(get("/api/v1/activity/calendar").param("cells", cell3).param("month", "2026-09"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.days.length()").value(30))
+                .andExpect(jsonPath("$.daysWithData").value(27))
+                .andExpect(jsonPath("$.days[0].harmonized").value(2.0))
+                .andExpect(jsonPath("$.days[0].contributing").value(3))
+                .andExpect(jsonPath("$.days[9].hasData").value(false))         // dia 10: contributing = 0
+                .andExpect(jsonPath("$.days[9].contributing").value(0))
+                .andExpect(jsonPath("$.days[9].harmonized").doesNotExist())   // sem dado nao e zero fogo
+                .andExpect(jsonPath("$.meta.resolution").value(3))
+                .andExpect(jsonPath("$.meta.unitLabelPt").value(containsString("equivalentes ao MODIS Aqua")))
+                .andExpect(jsonPath("$.meta.unitLabelEn")
+                        .value("Harmonized fire activity (MODIS Aqua-equivalent active cells)"))
+                .andExpect(jsonPath("$.meta.warnings").value(hasItem(containsString("contributing = 0"))))
+                .andExpect(jsonPath("$.meta.warnings").value(hasItem(containsString("nao e numero de focos"))))
+                .andExpect(jsonPath("$.meta.warnings").value(hasItem(containsString("dia local"))));
+        // por pais: junta com h3_place na resolucao 4
+        mvc.perform(get("/api/v1/activity/calendar?country=BR&month=2026-09"))
+                .andExpect(jsonPath("$.meta.resolution").value(4))
+                .andExpect(jsonPath("$.meta.region").value("pais:BR"))
+                .andExpect(jsonPath("$.days[0].harmonized").value(2.0));
+        mvc.perform(get("/api/v1/activity/calendar?country=PT&month=2026-09"))
+                .andExpect(jsonPath("$.days[0].harmonized").value(5.0));
+        // mes sem registro: vazio, mensagem e nenhum numero
+        mvc.perform(get("/api/v1/activity/calendar").param("cells", cell3).param("month", "2020-01"))
+                .andExpect(jsonPath("$.daysWithData").value(0))
+                .andExpect(jsonPath("$.message").value(containsString("Sem dados")))
+                .andExpect(jsonPath("$.days[0].harmonized").doesNotExist());
+    }
+
+    @Test
+    @Order(24)
+    void somas_mensais_ficam_em_ordem_e_marcam_mes_completo_e_dias_com_dado() throws Exception {
+        seedActivity();
+        String cell3 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 3));
+        mvc.perform(get("/api/v1/activity/monthly").param("cells", cell3).param("start", "2023-09")
+                        .param("end", "2026-09"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.months.length()").value(5))
+                .andExpect(jsonPath("$.months[0].month").value("2023-09"))
+                .andExpect(jsonPath("$.months[0].harmonized").value(30.0))
+                .andExpect(jsonPath("$.months[0].complete").value(true))
+                .andExpect(jsonPath("$.months[2].harmonized").value(90.0))
+                .andExpect(jsonPath("$.months[3].month").value("2026-08"))
+                .andExpect(jsonPath("$.months[3].harmonized").value(46.5))
+                .andExpect(jsonPath("$.months[4].month").value("2026-09"))
+                .andExpect(jsonPath("$.months[4].harmonized").value(54.0))
+                .andExpect(jsonPath("$.months[4].daysWithData").value(27))
+                .andExpect(jsonPath("$.months[4].daysInMonth").value(30))
+                .andExpect(jsonPath("$.meta.unitLabelPt").isString());
+        mvc.perform(get("/api/v1/activity/monthly").param("cells", cell3).param("start", "2026-09")
+                        .param("end", "2026-08"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/activity/monthly").param("cells", cell3).param("start", "2000-01")
+                        .param("end", "2026-09"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.parameter=='end')]").isNotEmpty());
+    }
+
+    @Test
+    @Order(25)
+    void anomalia_compara_com_a_mediana_do_mesmo_mes_e_exige_anos_suficientes() throws Exception {
+        seedActivity();
+        String cell3 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 3));
+        // 2026-09: 54 contra a mediana de 30, 60 e 90 = 60  =>  razao 0,9 e desvio de -10%
+        mvc.perform(get("/api/v1/activity/anomaly").param("cells", cell3).param("month", "2026-09"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sufficient").value(true))
+                .andExpect(jsonPath("$.current").value(54.0))
+                .andExpect(jsonPath("$.currentDaysWithData").value(27))
+                .andExpect(jsonPath("$.yearsWithData").value(3))
+                .andExpect(jsonPath("$.baselineMedian").value(60.0))
+                .andExpect(jsonPath("$.ratioToMedian").value(closeTo(0.9, 1e-9)))
+                .andExpect(jsonPath("$.deviationPct").value(closeTo(-10.0, 1e-9)))
+                .andExpect(jsonPath("$.baseline[0].year").value(2025))
+                .andExpect(jsonPath("$.baseline[0].harmonized").value(90.0))
+                .andExpect(jsonPath("$.meta.warnings").value(hasItem(containsString("nao e numero de focos"))));
+        // so 2 anos pedidos (2024 e 2025): insuficiente, sem mediana nem desvio inventados
+        mvc.perform(get("/api/v1/activity/anomaly").param("cells", cell3).param("month", "2026-09")
+                        .param("years", "2"))
+                .andExpect(jsonPath("$.sufficient").value(false))
+                .andExpect(jsonPath("$.yearsWithData").value(2))
+                .andExpect(jsonPath("$.baselineMedian").doesNotExist())
+                .andExpect(jsonPath("$.deviationPct").doesNotExist())
+                .andExpect(jsonPath("$.note").value(containsString("insuficientes")));
+        // Portugal so tem 2026: sem historico
+        mvc.perform(get("/api/v1/activity/anomaly?country=PT&month=2026-09"))
+                .andExpect(jsonPath("$.current").value(150.0))
+                .andExpect(jsonPath("$.sufficient").value(false))
+                .andExpect(jsonPath("$.yearsWithData").value(0));
+        // mes sem dado: nao ha numero atual
+        mvc.perform(get("/api/v1/activity/anomaly").param("cells", cell3).param("month", "2025-01"))
+                .andExpect(jsonPath("$.current").doesNotExist())
+                .andExpect(jsonPath("$.sufficient").value(false))
+                .andExpect(jsonPath("$.note").value(containsString("sem dado")));
+        mvc.perform(get("/api/v1/activity/anomaly").param("cells", cell3).param("month", "2026-09")
+                        .param("years", "11"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.parameter=='years')]").isNotEmpty());
+        mvc.perform(get("/api/v1/activity/anomaly").param("cells", cell3).param("month", "2026-9"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.parameter=='month')]").isNotEmpty());
+    }
+
+    @Test
+    @Order(26)
+    void disponibilidade_dos_satelites_filtra_por_satelite_e_valida_o_nome() throws Exception {
+        seedActivity();
+        mvc.perform(get("/api/v1/activity/availability?start=2026-09-01&end=2026-09-30"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(4))
+                .andExpect(jsonPath("$.days[0].platform").value("aqua"))
+                .andExpect(jsonPath("$.days[?(@.platform=='snpp')].available").value(false));
+        mvc.perform(get("/api/v1/activity/availability?start=2026-09-01&end=2026-09-30&platform=AQUA"))
+                .andExpect(jsonPath("$.count").value(2))
+                .andExpect(jsonPath("$.days[0].units").value(130));
+        mvc.perform(get("/api/v1/activity/availability?start=2026-09-01&end=2026-09-30&platform=landsat"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.parameter=='platform')]").isNotEmpty());
+        mvc.perform(get("/api/v1/activity/availability?start=2020-01-01&end=2020-01-31"))
+                .andExpect(jsonPath("$.count").value(0))
+                .andExpect(jsonPath("$.message").value(containsString("Sem registro")));
+    }
+
+    @Test
+    @Order(27)
+    void area_pequena_avisa_e_bbox_e_rejeitado() throws Exception {
+        seedActivity();
+        // uma celula de resolucao 6 (~36 km2) e uma area pequena: o aviso do erro mensal entra na resposta
+        String cell6 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 6));
+        mvc.perform(get("/api/v1/activity/calendar").param("cells", cell6).param("month", "2026-09"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.meta.smallArea").value(true))
+                .andExpect(jsonPath("$.meta.warnings").value(hasItem(containsString("Area pequena"))))
+                .andExpect(jsonPath("$.message").value(containsString("Sem dados")));
+        mvc.perform(get("/api/v1/activity/calendar?bbox=-56,-11,-55,-10&month=2026-09"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.parameter=='bbox')]").isNotEmpty());
+    }
+
+    @Test
+    @Order(28)
+    void importacao_da_atividade_rejeita_linhas_invalidas_e_falha_sem_gravar(@TempDir Path dir) throws Exception {
+        seedActivity();
+        long c3 = TestH3.cell(-10.5, -55.5, 3);
+        long c4 = TestH3.cell(-10.5, -55.5, 4);
+        CatalogFixtures.writeHarmonized(dir, List.of(
+                new CatalogFixtures.HarmRow(3, c3, "2026-09-01", 2.0, 3),
+                new CatalogFixtures.HarmRow(3, c4, "2026-09-02", 2.0, 3),    // celula de outra resolucao
+                new CatalogFixtures.HarmRow(3, c3, "2026-09-03", -1.0, 3),   // harmonizado negativo
+                new CatalogFixtures.HarmRow(3, c3, "2026-09-04", 2.0, 9)));  // 9 satelites nao existem
+        var svc = new HarmonizedImportService(ingestionRepository, new GoldFixtures.LocalStorage(dir));
+        svc.importCells(LocalDate.parse("2026-09-01"), LocalDate.parse("2026-09-30"), java.util.Set.of(3));
+        var log = jdbc.queryForMap("SELECT rows_scanned, rows_loaded, rows_rejected, rejects::text AS rejects "
+                + "FROM ingestion_log WHERE product = 'harmonized_cells' ORDER BY id DESC LIMIT 1");
+        assertEquals(4L, log.get("rows_scanned"));
+        assertEquals(1L, log.get("rows_loaded"));
+        assertTrue(log.get("rejects").toString().contains("h3_invalido"));
+        assertTrue(log.get("rejects").toString().contains("harmonizado_invalido"));
+        assertTrue(log.get("rejects").toString().contains("contribuintes_invalidos"));
+        activitySeeded = false; // o teste trocou setembro de 2026 no nivel 3: recarrega
+
+        // fonte sem a tabela Delta: falha registrada e erro (saida diferente de zero)
+        var empty = new GoldFixtures.LocalStorage(dir.resolve("nao-existe"));
+        assertThrows(GoldImportService.ImportFailedException.class, () -> new HarmonizedImportService(
+                ingestionRepository, empty).importAvailability(LocalDate.parse("2026-09-01"),
+                LocalDate.parse("2026-09-30")));
+        assertEquals("FAILED", jdbc.queryForObject("SELECT status FROM ingestion_log ORDER BY id DESC LIMIT 1",
+                String.class));
+        assertThrows(IllegalArgumentException.class, () -> svc.importCells(LocalDate.parse("2026-09-30"),
+                LocalDate.parse("2026-09-01"), null));
+        seedActivity();
     }
 }

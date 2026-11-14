@@ -4,6 +4,7 @@ import com.fireatlas.ingestion.integration.S3LakeStorage;
 import com.fireatlas.ingestion.repository.IngestionRepository;
 import com.fireatlas.ingestion.service.CatalogImportService;
 import com.fireatlas.ingestion.service.GoldImportService;
+import com.fireatlas.ingestion.service.HarmonizedImportService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -47,7 +48,8 @@ public class IngestionRunner implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        // dataset: map_grid (padrao), places (continente/pais/cidade), forecast (previsao) ou all
+        // dataset: map_grid (padrao), places (continente/pais/cidade), forecast (previsao), harmonized (atividade
+        // harmonizada: celulas e disponibilidade dos satelites) ou all
         String dataset = args.containsOption("ingest.dataset") ? required(args, "ingest.dataset") : "map_grid";
         try {
             if (dataset.equals("map_grid") || dataset.equals("all")) {
@@ -67,8 +69,18 @@ public class IngestionRunner implements ApplicationRunner {
             if (dataset.equals("forecast") || dataset.equals("all")) {
                 show(catalog.importForecast());
             }
-            if (!java.util.Set.of("map_grid", "places", "forecast", "all").contains(dataset)) {
-                throw new IllegalArgumentException("--ingest.dataset deve ser map_grid, places, forecast ou all");
+            if (dataset.equals("harmonized") || dataset.equals("all")) {
+                LocalDate start = LocalDate.parse(required(args, "ingest.start"));
+                LocalDate end = LocalDate.parse(required(args, "ingest.end"));
+                var resolutions = args.containsOption("ingest.resolutions")
+                        ? GoldImportService.parseResolutions(required(args, "ingest.resolutions")) : null;
+                var harmonized = new HarmonizedImportService(repository, lake);
+                show(harmonized.importCells(start, end, resolutions));
+                show(harmonized.importAvailability(start, end));
+            }
+            if (!java.util.Set.of("map_grid", "places", "forecast", "harmonized", "all").contains(dataset)) {
+                throw new IllegalArgumentException(
+                        "--ingest.dataset deve ser map_grid, places, forecast, harmonized ou all");
             }
         } catch (GoldImportService.ImportFailedException e) {
             e.report().files().forEach(f -> log.error("  {} {} - {}", f.status(), f.key(), f.detail()));

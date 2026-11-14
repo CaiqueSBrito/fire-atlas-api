@@ -2,7 +2,9 @@ package com.fireatlas.ingestion.repository;
 
 import com.fireatlas.ingestion.entity.ImportLogEntry;
 import com.fireatlas.ingestion.entity.ImportRecord;
+import com.fireatlas.ingestion.integration.AvailabilityFileReader;
 import com.fireatlas.ingestion.integration.ForecastFileReader;
+import com.fireatlas.ingestion.integration.HarmonizedFileReader;
 import com.fireatlas.ingestion.integration.GridFileReader;
 import com.fireatlas.ingestion.integration.PlaceFileReader;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -140,6 +142,36 @@ public class IngestionRepository {
 
         public long copyForecast(Path csv) throws IOException, SQLException {
             return copy(csv, "COPY forecast (" + ForecastFileReader.COPY_COLUMNS + ") FROM STDIN WITH (FORMAT csv)");
+        }
+
+        /** Remove a atividade harmonizada da resolucao no intervalo de datas (carga idempotente). */
+        public long deleteHarmonized(int resolution, LocalDate start, LocalDate end) throws SQLException {
+            try (PreparedStatement del = con.prepareStatement(
+                    "DELETE FROM harmonized_cell WHERE res = ? AND day BETWEEN ? AND ?")) {
+                del.setInt(1, resolution);
+                del.setObject(2, start);
+                del.setObject(3, end);
+                return del.executeUpdate();
+            }
+        }
+
+        public long copyHarmonized(Path csv) throws IOException, SQLException {
+            return copy(csv, "COPY harmonized_cell (" + HarmonizedFileReader.COPY_COLUMNS
+                    + ") FROM STDIN WITH (FORMAT csv)");
+        }
+
+        public long deleteAvailability(LocalDate start, LocalDate end) throws SQLException {
+            try (PreparedStatement del = con.prepareStatement(
+                    "DELETE FROM harmonized_availability WHERE day BETWEEN ? AND ?")) {
+                del.setObject(1, start);
+                del.setObject(2, end);
+                return del.executeUpdate();
+            }
+        }
+
+        public long copyAvailability(Path csv) throws IOException, SQLException {
+            return copy(csv, "COPY harmonized_availability (" + AvailabilityFileReader.COPY_COLUMNS
+                    + ") FROM STDIN WITH (FORMAT csv)");
         }
 
         private long copy(Path csv, String sql) throws IOException, SQLException {

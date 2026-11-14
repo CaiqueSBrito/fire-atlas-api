@@ -111,6 +111,97 @@ final class CatalogFixtures {
         commit(table, log);
     }
 
+
+    // ------------------------------------------------------------------------------ atividade harmonizada
+
+    /** Linha de gold/harmonized/cells (resolution e a particao; a celula tem de ser da mesma resolucao). */
+    record HarmRow(int res, long cell, String day, double harmonized, int contributing) {}
+
+    /** Linha de gold/harmonized/availability. */
+    record AvailRow(String day, String platform, int units, double typical, boolean available, boolean contributes) {}
+
+    private static final String[] SATS = {"terra", "aqua", "snpp", "noaa20", "noaa21"};
+
+    /** Tabela Delta particionada por resolution e year, com os 5 satelites como no pipeline (units em tinyint). */
+    static void writeHarmonized(Path root, List<HarmRow> rows) throws Exception {
+        Path table = root.resolve("gold/harmonized/cells");
+        List<String> log = header("[\"resolution\",\"year\"]");
+        Map<String, List<HarmRow>> groups = rows.stream().collect(Collectors.groupingBy(
+                r -> r.res() + "|" + r.day().substring(0, 4), TreeMap::new, Collectors.toList()));
+        for (var e : groups.entrySet()) {
+            List<HarmRow> part = e.getValue();
+            int res = part.get(0).res();
+            String year = part.get(0).day().substring(0, 4);
+            String rel = "resolution=" + res + "/year=" + year + "/part-00000-" + UUID.randomUUID()
+                    + "-c000.snappy.parquet";
+            Path file = table.resolve(rel);
+            Files.createDirectories(file.getParent());
+            try (Connection c = DriverManager.getConnection("jdbc:duckdb:"); Statement s = c.createStatement()) {
+                StringBuilder ddl = new StringBuilder("CREATE TABLE t (day DATE, h3_cell BIGINT");
+                for (String sat : SATS) {
+                    ddl.append(", units_").append(sat).append(" TINYINT, detections_").append(sat)
+                            .append(" INTEGER, aqua_eq_").append(sat).append(" DOUBLE");
+                }
+                s.execute(ddl.append(", harmonized DOUBLE, contributing TINYINT)").toString());
+                StringBuilder ins = new StringBuilder("INSERT INTO t VALUES ");
+                boolean first = true;
+                for (HarmRow r : part) {
+                    if (!first) ins.append(", ");
+                    first = false;
+                    ins.append("(DATE '").append(r.day()).append("', ").append(r.cell());
+                    for (int i = 0; i < SATS.length; i++) {
+                        boolean on = i < r.contributing();
+                        ins.append(", ").append(on ? 1 : 0).append(", ").append(on ? 2 : 0).append(", ")
+                                .append(on ? r.harmonized() / Math.max(1, r.contributing()) : 0.0);
+                    }
+                    ins.append(", ").append(r.harmonized()).append(", ").append(r.contributing()).append(")");
+                }
+                s.execute(ins.toString());
+                s.execute("COPY t TO '" + file.toString().replace("\\", "/") + "' (FORMAT parquet)");
+            }
+            String min = part.stream().map(HarmRow::day).min(String::compareTo).orElseThrow();
+            String max = part.stream().map(HarmRow::day).max(String::compareTo).orElseThrow();
+            log.add(add(rel, "{\"resolution\":\"" + res + "\",\"year\":\"" + year + "\"}", file, part.size(),
+                    "\"minValues\":{\"day\":\"" + min + "\"},\"maxValues\":{\"day\":\"" + max + "\"}"));
+        }
+        commit(table, log);
+    }
+
+    /** Tabela Delta particionada por year. */
+    static void writeAvailability(Path root, List<AvailRow> rows) throws Exception {
+        Path table = root.resolve("gold/harmonized/availability");
+        List<String> log = header("[\"year\"]");
+        Map<String, List<AvailRow>> groups = rows.stream().collect(Collectors.groupingBy(
+                r -> r.day().substring(0, 4), TreeMap::new, Collectors.toList()));
+        for (var e : groups.entrySet()) {
+            List<AvailRow> part = e.getValue();
+            String year = e.getKey();
+            String rel = "year=" + year + "/part-00000-" + UUID.randomUUID() + "-c000.snappy.parquet";
+            Path file = table.resolve(rel);
+            Files.createDirectories(file.getParent());
+            try (Connection c = DriverManager.getConnection("jdbc:duckdb:"); Statement s = c.createStatement()) {
+                s.execute("CREATE TABLE t (day DATE, platform VARCHAR, units INTEGER, typical_units DOUBLE, "
+                        + "available BOOLEAN, contributes BOOLEAN)");
+                StringBuilder ins = new StringBuilder("INSERT INTO t VALUES ");
+                boolean first = true;
+                for (AvailRow r : part) {
+                    if (!first) ins.append(", ");
+                    first = false;
+                    ins.append("(DATE '").append(r.day()).append("', '").append(r.platform()).append("', ")
+                            .append(r.units()).append(", ").append(r.typical()).append(", ").append(r.available())
+                            .append(", ").append(r.contributes()).append(")");
+                }
+                s.execute(ins.toString());
+                s.execute("COPY t TO '" + file.toString().replace("\\", "/") + "' (FORMAT parquet)");
+            }
+            String min = part.stream().map(AvailRow::day).min(String::compareTo).orElseThrow();
+            String max = part.stream().map(AvailRow::day).max(String::compareTo).orElseThrow();
+            log.add(add(rel, "{\"year\":\"" + year + "\"}", file, part.size(),
+                    "\"minValues\":{\"day\":\"" + min + "\"},\"maxValues\":{\"day\":\"" + max + "\"}"));
+        }
+        commit(table, log);
+    }
+
     private static List<String> header(String partitions) {
         List<String> lines = new ArrayList<>();
         lines.add("{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}");

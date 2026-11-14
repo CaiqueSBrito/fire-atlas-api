@@ -11,7 +11,8 @@ Space Apps 2026. Plataforma aberta, sem login.
 Data lake (S3) ── camada OURO (Delta Lake)
    ├─ gold/map_grid    grade H3 por dia e sensor (0 a 6)         ─┐
    ├─ gold/h3_places   continente, país e cidade por célula H3   ├─ importação (profile "ingest"):
-   └─ gold/forecast    previsão de fogo por célula (res. 6)      ─┘  só arquivos ativos do _delta_log
+   ├─ gold/forecast    previsão de fogo por célula (res. 6)       │  só arquivos ativos do _delta_log
+   └─ gold/harmonized  atividade harmonizada (cells, availability) ─┘  (publicação pelo time de dados prevista)
                                    ▼
 PostgreSQL (esquema gold) ── daily_h3 · h3_place · forecast · ingestion_log · sensor/satellite
                                    ▼
@@ -39,6 +40,7 @@ Documentação interativa: `http://localhost:8082/swagger-ui.html`. **Contrato c
 | FRP (soma, média, máximo) e confiança | Filtro por `bbox` |
 | **Filtro por continente, país e cidade** (`h3_places`) | |
 | **Previsão de fogo por célula** (`forecast`) | |
+| **Atividade de fogo harmonizada** (`/activity`: calendário, mensal, anomalia e disponibilidade dos satélites) | |
 
 Toda consulta usa **`cells`** (índices H3 em hexadecimal) **ou** `country`, `continent` ou `city`: a API não converte `bbox` em células.
 
@@ -59,7 +61,7 @@ java -jar target/fire-atlas-gold-api-0.1.0.jar --spring.profiles.active=ingest -
 java -jar target/fire-atlas-gold-api-0.1.0.jar --spring.profiles.active=ingest --ingest.dataset=all --ingest.start=2023-01-01 --ingest.end=2026-12-31
 ```
 
-`--ingest.dataset` aceita `map_grid` (padrão), `places`, `forecast` ou `all`. A gold completa da grade tem ~5,8 GB (a resolução 6 é a maior): importe o período e as resoluções de que precisa. Para o filtro por **cidade**, a grade da **resolução 5** (ou 6) tem de estar importada.
+`--ingest.dataset` aceita `map_grid` (padrão), `places`, `forecast`, `harmonized` ou `all`. Para a atividade harmonizada (`gold/harmonized/cells` e `availability`): `--ingest.dataset=harmonized --ingest.start=2023-01-01 --ingest.end=2026-12-31 [--ingest.resolutions=0,1,2,3,4]`. A gold completa da grade tem ~5,8 GB (a resolução 6 é a maior): importe o período e as resoluções de que precisa. Para o filtro por **cidade**, a grade da **resolução 5** (ou 6) tem de estar importada.
 
 | Regra | Como é tratada |
 |---|---|
@@ -100,3 +102,7 @@ Os testes geram tabelas Delta de verdade (Parquet + `_delta_log`) em pasta local
 ## Arquitetura
 
 Pastas por entidade, com as camadas dentro (`controller`, `dto`, `entity`, `mapper`, `policy`, `repository`, `service`; mais `integration` e `cli` na importação), verificadas por ArchUnit: `detection`, `calendar`, `analysis`, `ranking`, `place`, `forecast`, `sensor`, `ingestion`, `region`, `h3` e `common`.
+
+## Atividade harmonizada: estado da fonte
+
+`gold/harmonized/cells` e `gold/harmonized/availability` são gerados pelo time de dados e **ainda não estavam publicados em `gold/`** quando o código foi escrito (hoje só existe a versão de teste em `experiments/rf07-harmonization/`, sem os níveis de zoom). O importador e os endpoints `/activity` seguem o formato combinado (partição `resolution` e `year`; `availability` por `year`) e foram testados com tabelas Delta geradas nesse formato. **Quando o time publicar, conferir** as colunas e a importação com o dado real. A atualização depois será diária (regrava o ano corrente); o backend só reimporta.

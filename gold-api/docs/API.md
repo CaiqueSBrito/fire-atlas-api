@@ -123,6 +123,33 @@ período. Com menos de 20 células com registro, `criticalThreshold` não é cal
 | `GET /meta/coverage` | período e total de detecções por sensor, do que está importado |
 | `GET /meta/sources` | importações da gold (concluídas e falhas): partição e versão do Delta, período, linhas lidas/gravadas/rejeitadas, linhas esperadas, `verified` |
 
+## Atividade de fogo harmonizada (`/activity`)
+
+Vem de `gold/harmonized` (time de dados): um número por célula H3, **dia local de fogo** e nível de zoom, que junta os cinco satélites (Terra, Aqua, SNPP, NOAA-20 e NOAA-21) na escala do MODIS Aqua.
+
+**Rótulo obrigatório na interface** (também vem em `meta.unitLabelPt` e `meta.unitLabelEn`):
+- PT: **"Atividade de fogo harmonizada (células ativas equivalentes ao MODIS Aqua)"**
+- EN: **"Harmonized fire activity (MODIS Aqua-equivalent active cells)"**
+
+**Não é número de focos nem de incendios** (a contagem de focos continua em `/detections`). O dia é o dia local (06:00 a 06:00 no horário solar local), **não** UTC.
+
+Região: `cells`, `country`, `continent` ou `city` (como nas outras consultas; `bbox` não). A consulta usa a resolução das próprias células: os níveis 0 a 5 já trazem a soma dos filhos, a API **não soma células r6**.
+
+| Endpoint | O que devolve |
+|---|---|
+| `GET /activity/calendar?month=YYYY-MM` | Um item por dia do mês: `{date, harmonized, contributing, hasData}`. **Dia sem dado** (`contributing = 0` ou sem linha) vem **sem número** (`hasData=false`): sem dado não é zero fogo |
+| `GET /activity/monthly?start=YYYY-MM&end=YYYY-MM` | Somas mensais (até 120 meses): `{month, harmonized, daysWithData, daysInMonth, complete}` |
+| `GET /activity/anomaly?month=YYYY-MM&years=5` | O mês contra a **mediana do mesmo mês** nos anos anteriores com dado (`years` de 1 a 10): `current`, `baseline` (um item por ano), `baselineMedian`, `ratioToMedian`, `deviationPct`. **Com menos de 3 anos com dado, `sufficient=false` e não calcula mediana nem desvio** (RN05) |
+| `GET /activity/availability?start&end&platform` | Disponibilidade dos satélites por dia: `{date, platform, units, typicalUnits, available, contributes}` (`platform`: terra, aqua, snpp, noaa20 ou noaa21) |
+
+Toda resposta (menos `availability`) traz `meta` com recorte, fonte, método, resolução usada, **área estimada** (`areaKm2Estimate`, pela área média de uma célula em cada resolução) e `warnings`:
+- unidade (não é número de focos nem de incêndios) e dia local;
+- `contributing = 0` significa sem dado, não zero fogo;
+- **dia corrente incompleto** até fechar;
+- **meses recentes** (últimos 90 dias) são dados NRT e podem mudar;
+- de **2000-11 a 2002-06 só há o Terra**: a estimativa é a mais fraca;
+- **área pequena** (abaixo de ~2.000 km², `smallArea=true`): o erro mensal chega a cerca de 33%.
+
 ## Ainda não disponível
 - **Pontos individuais, correspondências e harmonização MODIS × VIIRS**: a gold não tem focos individuais (ficam no app principal, a partir da prata).
 - **Mediana de FRP**: a gold traz soma, média e máximo.
