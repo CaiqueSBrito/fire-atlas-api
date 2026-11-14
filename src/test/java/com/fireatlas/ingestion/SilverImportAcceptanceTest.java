@@ -193,4 +193,19 @@ class SilverImportAcceptanceTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.summary.candidateAssociationsTotal").value(1));
     }
+
+    @Test
+    @Order(6)
+    void fonte_indisponivel_falha_sem_criar_registros_ficticios(@TempDir Path dir) throws Exception {
+        clean();
+        SilverFixtures.write(dir, rows(), null);
+        var storage = new GoldFixtures.LocalStorage(dir).failingOn(k -> true);
+        var ex = assertThrows(SilverImportService.ImportFailedException.class,
+                () -> new SilverImportService(repository, storage, "prata/silver/")
+                        .run(period("2026-11-12", "2026-11-12", null)));
+        assertTrue(ex.report().failed());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM detection", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM lake_import_log WHERE status = 'FAILED'",
+                Integer.class));
+    }
 }
