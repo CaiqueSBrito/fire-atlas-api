@@ -89,6 +89,13 @@ class DetectionContractAcceptanceTest {
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM detection", Integer.class));
     }
 
+    @Test
+    void rota_inexistente_e_404_e_metodo_errado_e_405() throws Exception {
+        mvc.perform(get("/api/v2/sources")).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/detections"))
+                .andExpect(status().isMethodNotAllowed());
+    }
+
     private String snapshot() {
         return jdbc.queryForObject("""
                 SELECT md5(string_agg(concat_ws('|', sensor, satellite, acq_ts, lat, lon, frp, brightness, bright_t31,
