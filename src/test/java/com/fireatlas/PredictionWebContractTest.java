@@ -2,10 +2,10 @@ package com.fireatlas;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fireatlas.api.PredictionController;
-import com.fireatlas.domain.BBox;
-import com.fireatlas.query.DetectionRepository;
-import com.fireatlas.query.PredictionService;
+import com.fireatlas.prediction.controller.PredictionController;
+import com.fireatlas.region.entity.BBox;
+import com.fireatlas.detection.repository.DetectionRepository;
+import com.fireatlas.prediction.service.PredictionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;

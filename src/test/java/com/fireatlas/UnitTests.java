@@ -1,10 +1,10 @@
 package com.fireatlas;
 
-import com.fireatlas.domain.BBox;
-import com.fireatlas.domain.GridMath;
-import com.fireatlas.api.QueryParams;
-import com.fireatlas.ingestion.DetectionRowParser;
-import com.fireatlas.query.Anomaly;
+import com.fireatlas.region.entity.BBox;
+import com.fireatlas.detection.policy.GridMath;
+import com.fireatlas.common.controller.QueryParams;
+import com.fireatlas.ingestion.integration.DetectionRowParser;
+import com.fireatlas.analysis.policy.Anomaly;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;

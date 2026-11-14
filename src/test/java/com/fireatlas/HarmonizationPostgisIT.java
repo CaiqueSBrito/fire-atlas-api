@@ -2,17 +2,17 @@ package com.fireatlas;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fireatlas.api.AnalysisController;
-import com.fireatlas.api.ApiExceptionHandler;
-import com.fireatlas.api.Dto;
-import com.fireatlas.domain.BBox;
-import com.fireatlas.ingestion.DetectionCsvLoader;
-import com.fireatlas.ingestion.DetectionRowParser;
-import com.fireatlas.ingestion.IngestionRunner;
-import com.fireatlas.ingestion.IngestionTestBridge;
+import com.fireatlas.analysis.controller.AnalysisController;
+import com.fireatlas.common.controller.ApiExceptionHandler;
+import com.fireatlas.common.dto.Dto;
+import com.fireatlas.region.entity.BBox;
+import com.fireatlas.ingestion.integration.DetectionCsvLoader;
+import com.fireatlas.ingestion.integration.DetectionRowParser;
+import com.fireatlas.ingestion.cli.IngestionRunner;
+import com.fireatlas.ingestion.cli.IngestionTestBridge;
 import com.fireatlas.oracle.FirmsIndependentOracle;
-import com.fireatlas.query.DetectionRepository;
-import com.fireatlas.query.HarmonizationService;
+import com.fireatlas.detection.repository.DetectionRepository;
+import com.fireatlas.harmonization.service.HarmonizationService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -969,7 +969,7 @@ class HarmonizationPostgisIT {
                 ps.executeUpdate();
             }
 
-            var v1ToLatest = Flyway.configure().dataSource(upgradeUrl, user, pass).locations("classpath:db/migration").load().migrate();
+            var v1ToLatest = Flyway.configure().dataSource(upgradeUrl, user, pass).locations("classpath:db/migration").target("6").load().migrate();
             assertEquals(5, v1ToLatest.migrationsExecuted);
             assertEquals("6", v1ToLatest.targetSchemaVersion);
 
@@ -1053,7 +1053,7 @@ class HarmonizationPostgisIT {
                 ps.executeUpdate();
             }
 
-            var v4ToV6 = Flyway.configure().dataSource(v4UpgradeUrl, user, pass).locations("classpath:db/migration").load().migrate();
+            var v4ToV6 = Flyway.configure().dataSource(v4UpgradeUrl, user, pass).locations("classpath:db/migration").target("6").load().migrate();
             assertEquals(2, v4ToV6.migrationsExecuted);
             assertEquals("6", v4ToV6.targetSchemaVersion);
 
@@ -1996,7 +1996,7 @@ class HarmonizationPostgisIT {
             assertEquals(1, toV5.migrationsExecuted);
             assertEquals("5", toV5.targetSchemaVersion);
 
-            var toV6 = Flyway.configure().dataSource(legacyUrl, user, pass).locations("classpath:db/migration").load().migrate();
+            var toV6 = Flyway.configure().dataSource(legacyUrl, user, pass).locations("classpath:db/migration").target("6").load().migrate();
             assertEquals(1, toV6.migrationsExecuted);
             assertEquals("6", toV6.targetSchemaVersion);
 

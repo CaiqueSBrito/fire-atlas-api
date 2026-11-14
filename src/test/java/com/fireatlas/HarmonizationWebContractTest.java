@@ -1,11 +1,11 @@
 package com.fireatlas;
 
-import com.fireatlas.api.AnalysisController;
-import com.fireatlas.api.DetectionController;
-import com.fireatlas.api.Dto;
-import com.fireatlas.api.MetaController;
-import com.fireatlas.query.DetectionRepository;
-import com.fireatlas.query.HarmonizationService;
+import com.fireatlas.analysis.controller.AnalysisController;
+import com.fireatlas.detection.controller.DetectionController;
+import com.fireatlas.common.dto.Dto;
+import com.fireatlas.meta.controller.MetaController;
+import com.fireatlas.detection.repository.DetectionRepository;
+import com.fireatlas.harmonization.service.HarmonizationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;

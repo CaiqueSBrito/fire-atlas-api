@@ -1,0 +1,2 @@
+# Fixtures de teste cujo hash (SHA-256) e conferido byte a byte: nao converter quebras de linha (ex.: CRLF no Windows).
+src/test/resources/fixtures/** -text
