@@ -3,6 +3,7 @@ package com.fireatlas.lake.integration;
 import com.fireatlas.gold.common.policy.SourceUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -27,12 +28,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
- * Consulta a camada ouro direto no S3 pelo Amazon Athena (tabelas Delta registradas no Glue), sem copiar nada para o
- * PostGIS. Toda consulta vai com reuso de resultado ligado: repeticao do mesmo texto SQL dentro da validade nao
- * escaneia byte nenhum e responde em fracao de segundo, por isso o SQL precisa ser canonico (veja
- * {@code TrinoFilters}).
+ * Consulta tabelas Delta registradas no Glue pelo Amazon Athena. SELECTs usam SQL canonico e reuso de resultado
+ * (veja {@code TrinoFilters}); comandos UNLOAD do cache anual desativam reuso e devolvem apenas o manifesto.
  * <p>
  * Credenciais de {@code fireatlas.s3.access-key-id}/{@code secret-access-key} ou, se vazias, da cadeia padrao da AWS
  * (perfil ou IAM Role) — as mesmas do {@link S3LakeStorage}.
@@ -97,6 +97,15 @@ public class AthenaQuery implements AutoCloseable {
     private final int reuseMinutes;
     private final long timeoutMs;
 
+    /** UNLOAD busca apenas estado e endereco do manifesto, nunca DATA_ROWS/CSV. */
+    public record Command(String queryId, String manifestLocation) {}
+
+    /** Apenas falhas terminais podem abandonar um destino UNLOAD possivelmente nao vazio. */
+    public static final class QueryFailedException extends SourceUnavailableException {
+        QueryFailedException(String message) { super(message); }
+    }
+
+    @Autowired
     public AthenaQuery(@Value("${fireatlas.athena.database}") String database,
                        @Value("${fireatlas.athena.workgroup}") String workgroup,
                        @Value("${fireatlas.athena.result-reuse-minutes:1440}") int reuseMinutes,
@@ -118,39 +127,107 @@ public class AthenaQuery implements AutoCloseable {
         this.athena = builder.build();
     }
 
+    AthenaQuery(AthenaClient athena, String database, String workgroup, int reuseMinutes, long timeoutMs) {
+        this.athena = athena;
+        this.database = database;
+        this.workgroup = workgroup;
+        this.reuseMinutes = reuseMinutes;
+        this.timeoutMs = timeoutMs;
+    }
+
+    public String sourceIdentity() {
+        return database + "/" + workgroup;
+    }
+
+    /** Usa a localizacao efetiva do workgroup, nao um bucket presumido. */
+    public String workgroupOutputLocation() {
+        try {
+            var configuration = athena.getWorkGroup(r -> r.workGroup(workgroup)).workGroup().configuration();
+            String location = configuration.resultConfiguration() == null ? null
+                    : configuration.resultConfiguration().outputLocation();
+            if (location == null || location.isBlank()) {
+                throw unavailable("workgroup sem OutputLocation S3; defina BOOTSTRAP_EXPORT_PREFIX", null);
+            }
+            return location;
+        } catch (AthenaException e) {
+            throw unavailable(e.awsErrorDetails() == null ? e.getMessage() : e.awsErrorDetails().errorMessage(), e);
+        }
+    }
+
+    /** Token duravel permite reencontrar a execucao apos uma queda antes de salvar seu id. */
+    public String startCommand(String sql, String clientToken) {
+        return start(sql, clientToken, false);
+    }
+
+    public Command awaitCommand(String id, long commandTimeoutMs) {
+        try {
+            var execution = await(id, commandTimeoutMs);
+            String manifest = execution.statistics() == null ? null : execution.statistics().dataManifestLocation();
+            if (manifest == null || manifest.isBlank()) {
+                throw unavailable("UNLOAD " + id + " terminou sem DataManifestLocation", null);
+            }
+            return new Command(id, manifest);
+        } catch (RuntimeException e) {
+            if (Thread.currentThread().isInterrupted()) {
+                try {
+                    athena.stopQueryExecution(r -> r.queryExecutionId(id));
+                } catch (RuntimeException stop) {
+                    log.warn("Nao foi possivel cancelar UNLOAD {}", id, stop);
+                }
+            }
+            throw e;
+        }
+    }
+
     /** Executa o SQL e devolve as linhas; falha de execucao vira {@link SourceUnavailableException}. */
     public List<Row> run(String sql) {
-        long t0 = System.currentTimeMillis();
-        String id = start(sql);
-        QueryExecution execution = await(id);
-        List<Row> rows = fetch(id);
-        var stats = execution.statistics();
-        boolean reused = stats != null && stats.resultReuseInformation() != null
-                && Boolean.TRUE.equals(stats.resultReuseInformation().reusedPreviousResult());
-        log.info("athena {} {} linhas, {} MB escaneados, reuso={}, {} ms", id, rows.size(),
-                String.format("%.1f", (stats == null || stats.dataScannedInBytes() == null
-                        ? 0 : stats.dataScannedInBytes()) / 1e6), reused, System.currentTimeMillis() - t0);
+        List<Row> rows = new ArrayList<>();
+        stream(sql, rows::addAll);
         return rows;
     }
 
+    /** Resultados paginados: o consumidor persiste cada pagina antes da proxima, sem buffer anual. */
+    public long stream(String sql, Consumer<List<Row>> consumer) {
+        long t0 = System.currentTimeMillis();
+        String id = start(sql);
+        QueryExecution execution = await(id);
+        long count = fetch(id, consumer);
+        var stats = execution.statistics();
+        boolean reused = stats != null && stats.resultReuseInformation() != null
+                && Boolean.TRUE.equals(stats.resultReuseInformation().reusedPreviousResult());
+        log.info("athena {} {} linhas, {} MB escaneados, reuso={}, {} ms", id, count,
+                String.format("%.1f", (stats == null || stats.dataScannedInBytes() == null
+                        ? 0 : stats.dataScannedInBytes()) / 1e6), reused, System.currentTimeMillis() - t0);
+        return count;
+    }
+
     private String start(String sql) {
+        return start(sql, null, true);
+    }
+
+    private String start(String sql, String clientToken, boolean reuse) {
         try {
-            return athena.startQueryExecution(StartQueryExecutionRequest.builder()
+            var request = StartQueryExecutionRequest.builder()
                     .queryString(sql)
                     .workGroup(workgroup)
                     .queryExecutionContext(QueryExecutionContext.builder().database(database).build())
                     .resultReuseConfiguration(ResultReuseConfiguration.builder()
                             .resultReuseByAgeConfiguration(ResultReuseByAgeConfiguration.builder()
-                                    .enabled(true).maxAgeInMinutes(reuseMinutes).build())
-                            .build())
-                    .build()).queryExecutionId();
+                                    .enabled(reuse).maxAgeInMinutes(reuseMinutes).build())
+                            .build());
+            if (clientToken != null) request.clientRequestToken(clientToken);
+            return athena.startQueryExecution(request.build()).queryExecutionId();
         } catch (AthenaException e) {
             throw unavailable(e.awsErrorDetails() == null ? e.getMessage() : e.awsErrorDetails().errorMessage(), e);
         }
     }
 
     private QueryExecution await(String id) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
+        return await(id, timeoutMs);
+    }
+
+    private QueryExecution await(String id, long queryTimeoutMs) {
+        long deadline = System.currentTimeMillis() + queryTimeoutMs;
         while (true) {
             QueryExecution e = athena.getQueryExecution(GetQueryExecutionRequest.builder()
                     .queryExecutionId(id).build()).queryExecution();
@@ -159,22 +236,23 @@ public class AthenaQuery implements AutoCloseable {
             if (state == QueryExecutionState.FAILED || state == QueryExecutionState.CANCELLED) {
                 String reason = e.status().stateChangeReason();
                 log.error("athena {} {}: {}", id, state, reason);
-                throw unavailable(reason, null);
+                throw new QueryFailedException("Consulta ao data lake " + id + " " + state + ": " + reason);
             }
             if (System.currentTimeMillis() > deadline) {
                 athena.stopQueryExecution(r -> r.queryExecutionId(id));
-                throw unavailable("consulta ao data lake passou de " + timeoutMs + " ms", null);
+                throw new QueryFailedException("Consulta ao data lake passou de " + queryTimeoutMs + " ms");
             }
             sleep();
         }
     }
 
-    private List<Row> fetch(String id) {
-        List<Row> rows = new ArrayList<>();
+    private long fetch(String id, Consumer<List<Row>> consumer) {
+        long count = 0;
         List<String> columns = null;
         boolean first = true;
         for (var page : athena.getQueryResultsPaginator(GetQueryResultsRequest.builder()
                 .queryExecutionId(id).build())) {
+            List<Row> rows = new ArrayList<>();
             if (columns == null) {
                 columns = page.resultSet().resultSetMetadata().columnInfo().stream().map(ColumnInfo::name).toList();
             }
@@ -189,8 +267,10 @@ public class AthenaQuery implements AutoCloseable {
                 rows.add(new Row(values));
             }
             first = false;
+            count += rows.size();
+            consumer.accept(rows);
         }
-        return rows;
+        return count;
     }
 
     private static void sleep() {

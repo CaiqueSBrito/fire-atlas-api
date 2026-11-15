@@ -58,6 +58,33 @@ public class S3LakeStorage implements LakeStorage, AutoCloseable {
         return name;
     }
 
+    /** Identidade publica da origem; nao inclui credenciais. */
+    public String location(String key) {
+        return "s3://" + bucket + "/" + key;
+    }
+
+    /** Resultados UNLOAD podem estar em outro bucket que o da gold. */
+    public byte[] readLocation(String location) {
+        String[] object = objectLocation(location);
+        return s3.getObjectAsBytes(GetObjectRequest.builder().bucket(object[0]).key(object[1]).build()).asByteArray();
+    }
+
+    public Path downloadLocation(String location) throws IOException {
+        String[] object = objectLocation(location);
+        return download(object[0], object[1]);
+    }
+
+    private static String[] objectLocation(String location) {
+        if (location == null || !location.startsWith("s3://")) {
+            throw new IllegalArgumentException("resultado Athena deve ser um objeto s3://");
+        }
+        int slash = location.indexOf('/', 5);
+        if (slash <= 5 || slash == location.length() - 1) {
+            throw new IllegalArgumentException("objeto S3 incompleto: " + location);
+        }
+        return new String[] {location.substring(5, slash), location.substring(slash + 1)};
+    }
+
     @Override
     public List<String> list(String prefix) {
         List<String> keys = new ArrayList<>();
@@ -78,10 +105,14 @@ public class S3LakeStorage implements LakeStorage, AutoCloseable {
 
     @Override
     public Path download(String key) throws IOException {
+        return download(bucket, key);
+    }
+
+    private Path download(String objectBucket, String key) throws IOException {
         Path dir = Files.createTempDirectory("fireatlas-lake-");
         Path file = dir.resolve(key.substring(key.lastIndexOf('/') + 1));
         try {
-            s3.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build(),
+            s3.getObject(GetObjectRequest.builder().bucket(objectBucket).key(key).build(),
                     ResponseTransformer.toFile(file));
         } catch (RuntimeException e) {
             release(file);
