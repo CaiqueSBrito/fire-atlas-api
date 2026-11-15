@@ -15,5 +15,20 @@ services:
       timeout: 3s
       retries: 20
 
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env          # DATALAKE_BUCKET, AWS_* etc.; opcional
+        required: false
+    environment:            # sobrepoe o .env: dentro da rede do compose o banco e db:5432
+      DB_URL: jdbc:postgresql://db:5432/fireatlas
+      DB_USER: fireatlas
+      DB_PASSWORD: fireatlas
+    ports:
+      - "8080:8080"
+
 volumes:
   pgdata:

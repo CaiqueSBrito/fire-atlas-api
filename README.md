@@ -16,11 +16,20 @@ API REST (/api/v1) ──► Frontend Next.js
 
 ## Rodar localmente
 
-Requisitos: Java 21+, Maven, Docker.
+Tudo no Docker (so precisa de Docker; o build compila com Maven dentro da imagem):
+
+```bash
+cp .env.example .env           # preencha DATALAKE_BUCKET e, se usar, AWS_* (o compose repassa o .env para a API)
+docker compose up -d --build   # PostGIS em localhost:5433 + API em http://localhost:8080
+```
+
+Dentro do compose a API usa `db:5432`; o `DB_URL` do `.env` so vale para rodar fora do Docker.
+
+Ou a API pelo Maven (requisitos: Java 21+, Maven, Docker):
 
 ```bash
 cp .env.example .env           # preencha DATALAKE_BUCKET (o .env e lido pela API, nao precisa exportar)
-docker compose up -d            # PostGIS em localhost:5433 (evita conflito com outro Postgres na 5432)
+docker compose up -d db         # so o PostGIS em localhost:5433 (evita conflito com outro Postgres na 5432)
 mvn spring-boot:run             # API em http://localhost:8080 (Flyway cria o schema; a gold e sincronizada sozinha)
 ```
 
