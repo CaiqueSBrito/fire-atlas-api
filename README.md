@@ -105,6 +105,10 @@ Mapa (`/detections`, `/coverage`), calendario, ranking, analise, `/forecast`, lu
 sensores e `/activity/{calendar,monthly,anomaly,availability}` (atividade harmonizada: **celulas ativas equivalentes ao MODIS Aqua**,
 nao e contagem de focos; `contributing = 0` significa sem dado). Documentacao completa no Swagger.
 
+`/forecast` aceita `cells` de qualquer resolucao (a celula de resolucao 6 entra pelo ancestral, sem expandir filhas) ou um
+lugar, e devolve `summary` (celulas, ativas, maior e media da probabilidade na regiao inteira, sem os filtros da lista) e
+as celulas da maior para a menor probabilidade com `countryName`, `cityName` e `cityDistanceKm` de `h3_place`.
+
 ### Previsao a partir da gold/forecast
 
 Por padrao o provedor preditivo continua desligado (`MODEL_NOT_VALIDATED`). Para servir a previsao do time de dados em

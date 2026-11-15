@@ -1,5 +1,6 @@
 package com.fireatlas.gold.region.repository;
 
+import com.fireatlas.gold.h3.policy.H3Index;
 import com.fireatlas.gold.region.entity.Region;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
@@ -41,10 +42,15 @@ public final class SqlFilters {
                 + placeCondition(c.place()) + ")";
     }
 
-    /** Igual a {@link #regionSql}, para uma coluna de celula com resolucao fixa (ex.: forecast.h3_r6). */
-    public static String regionSqlFixedRes(Region.Cover c, String cellCol) {
-        if (c.place() == null) return cellCol + " = ANY(CAST(:cells AS bigint[]))";
-        return cellCol + " IN (SELECT pl.cell FROM h3_place pl WHERE pl.res = :res AND "
+    /**
+     * Igual a {@link #regionSql}, para uma coluna de celula com resolucao fixa (ex.: forecast.h3_r6). Se a cobertura
+     * for mais grossa que a coluna, compara o ancestral da celula na resolucao da cobertura (sem expandir filhas).
+     * A lista vira semi-join com hash: com {@code = ANY} o Postgres compara cada linha com a lista inteira.
+     */
+    public static String regionSqlFixedRes(Region.Cover c, String cellCol, int cellRes) {
+        String cell = c.res() < cellRes ? H3Index.parentSql(cellCol, c.res()) : cellCol;
+        if (c.place() == null) return cell + " IN (SELECT unnest(CAST(:cells AS bigint[])))";
+        return cell + " IN (SELECT pl.cell FROM h3_place pl WHERE pl.res = :res AND "
                 + placeCondition(c.place()) + ")";
     }
 

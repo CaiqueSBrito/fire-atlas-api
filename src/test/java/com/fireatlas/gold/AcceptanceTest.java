@@ -704,9 +704,22 @@ class AcceptanceTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.count").value(0))
                 .andExpect(jsonPath("$.message").value(containsString("2026-09-28")));
-        // por celulas H3: qualquer resolucao vira as celulas de resolucao 6 dentro dela
+        // por celulas H3: qualquer resolucao cobre as celulas de resolucao 6 dentro dela
         mvc.perform(get("/api/v2/forecast").param("cells", H3Index.toHex(TestH3.cell(-10.5, -55.5, 3))))
                 .andExpect(jsonPath("$.count").value(3));
+        // celula grossa demais para expandir em filhas de resolucao 6 (antes voltava vazio)
+        mvc.perform(get("/api/v2/forecast").param("cells", H3Index.toHex(TestH3.cell(-10.5, -55.5, 0))))
+                .andExpect(jsonPath("$.count").value(3));
+        // totais da regiao independem dos filtros da lista; lugar da celula vem de h3_place
+        mvc.perform(get("/api/v2/forecast?country=BR&minProbability=0.5&limit=1"))
+                .andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.summary.cells").value(3))
+                .andExpect(jsonPath("$.summary.activeCells").value(1))
+                .andExpect(jsonPath("$.summary.maxProbability").value(closeTo(0.90, 0.001)))
+                .andExpect(jsonPath("$.summary.meanProbability").value(closeTo(0.4667, 0.001), Double.class))
+                .andExpect(jsonPath("$.items[0].countryName").value("Brasil"))
+                .andExpect(jsonPath("$.items[0].cityName").value("Cidade 111"))
+                .andExpect(jsonPath("$.items[0].cityDistanceKm").value(closeTo(4.0, 0.001)));
         mvc.perform(get("/api/v2/forecast?country=BR&minProbability=2&limit=0"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors.length()").value(2));
