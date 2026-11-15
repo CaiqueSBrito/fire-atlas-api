@@ -1,5 +1,6 @@
 package com.fireatlas.gold.detection.repository;
 
+import com.fireatlas.gold.bootstrap.repository.AnnualCacheQuery;
 import com.fireatlas.gold.detection.entity.CellAggregate;
 import com.fireatlas.gold.detection.entity.CellDistribution;
 import com.fireatlas.gold.detection.entity.Coverage;
@@ -20,9 +21,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Consultas da grade H3 diaria direto no data lake pelo Athena ({@code map_grid}, tabela Delta registrada no
- * Glue): nada e materializado no PostGIS. Toda consulta usa UMA resolucao, a da cobertura, e leva o filtro de
- * particao ({@code resolution} e {@code year}) para o Athena nao varrer a tabela inteira.
+ * Consultas da grade H3 diaria: 2026 usa o cache mundial duravel; os demais anos continuam no Athena.
+ * Periodos mistos sao agregados sobre a uniao completa antes de aplicar ranking, limite ou percentil.
  */
 @Repository("goldDetectionRepository")
 public class DetectionRepository {
@@ -34,10 +34,10 @@ public class DetectionRepository {
     /** Cobertura olha so a resolucao mais grossa carregada; e o filtro de particao da consulta sem periodo. */
     private static final int COVERAGE_RESOLUTION = 0;
 
-    private final AthenaQuery athena;
+    private final AnnualCacheQuery queries;
 
-    public DetectionRepository(AthenaQuery athena) {
-        this.athena = athena;
+    public DetectionRepository(AnnualCacheQuery queries) {
+        this.queries = queries;
     }
 
     /** Celulas H3 agregadas por sensor (pede limit+1 para o chamador poder sinalizar truncamento). */
@@ -51,7 +51,7 @@ public class DetectionRepository {
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY sensor, h3_cell"
                 + " LIMIT " + (limit + 1);
-        return athena.run(sql).stream().map(r -> new CellAggregate(r.str("sensor"), r.lngOr("h3_cell", 0),
+        return queries.grid(sql, cover, s, e, sensors).stream().map(r -> new CellAggregate(r.str("sensor"), r.lngOr("h3_cell", 0),
                 r.intOr("n", 0), r.dblOr("frp_sum", 0), flt(r, "frp_max"))).toList();
     }
 
@@ -62,7 +62,7 @@ public class DetectionRepository {
                 + " WHERE " + TrinoFilters.where(cover, "h3_cell", s, e)
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY day, sensor ORDER BY day, sensor";
-        return athena.run(sql).stream().map(r -> new DayTotal(r.date("day"), r.str("sensor"),
+        return queries.grid(sql, cover, s, e, sensors).stream().map(r -> new DayTotal(r.date("day"), r.str("sensor"),
                 r.intOr("n", 0), r.dblOr("frp_sum", 0))).toList();
     }
 
@@ -75,7 +75,7 @@ public class DetectionRepository {
                 + " WHERE " + TrinoFilters.where(cover, "h3_cell", s, e)
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY sensor ORDER BY sensor";
-        return athena.run(sql).stream().map(r -> new PeriodTotal(r.str("sensor"), r.lngOr("n", 0),
+        return queries.grid(sql, cover, s, e, sensors).stream().map(r -> new PeriodTotal(r.str("sensor"), r.lngOr("n", 0),
                 r.dblOr("frp_sum", 0), r.intOr("days", 0))).toList();
     }
 
@@ -92,9 +92,9 @@ public class DetectionRepository {
                 + " WHERE " + TrinoFilters.where(cover, "h3_cell", s, e)
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY h3_cell"
-                + " ORDER BY " + order + " DESC, h3_cell"
+                + " ORDER BY " + order + " DESC NULLS LAST, h3_cell"
                 + " LIMIT " + limit;
-        return athena.run(sql).stream().map(r -> new RankedCell(r.lngOr("h3_cell", 0), r.lngOr("n", 0),
+        return queries.grid(sql, cover, s, e, sensors).stream().map(r -> new RankedCell(r.lngOr("h3_cell", 0), r.lngOr("n", 0),
                 r.dblOr("frp_sum", 0), flt(r, "frp_max"), r.lngOr("modis", 0), r.lngOr("viirs", 0))).toList();
     }
 
@@ -109,7 +109,7 @@ public class DetectionRepository {
                 + " WHERE " + TrinoFilters.where(cover, "h3_cell", s, e)
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY h3_cell) t";
-        return athena.run(sql).stream().findFirst()
+        return queries.grid(sql, cover, s, e, sensors).stream().findFirst()
                 .map(r -> new CellDistribution(r.lngOr("cells", 0), r.dbl("pct_value")))
                 .orElse(new CellDistribution(0, null));
     }
@@ -130,7 +130,7 @@ public class DetectionRepository {
                 + " WHERE " + TrinoFilters.where(cover, "h3_cell", s, e)
                 + " AND " + sensorIn(sensors)
                 + " GROUP BY sensor ORDER BY sensor";
-        return athena.run(sql).stream().map(r -> {
+        return queries.grid(sql, cover, s, e, sensors).stream().map(r -> {
             // classes l/n/h existem so no VIIRS; no MODIS a fonte traz a media da confianca (0-100)
             String sensor = r.str("sensor");
             Map<String, Long> conf = new LinkedHashMap<>();
@@ -151,8 +151,15 @@ public class DetectionRepository {
                 + " FROM " + GRID
                 + " WHERE resolution = " + COVERAGE_RESOLUTION
                 + " GROUP BY sensor ORDER BY sensor";
-        return athena.run(sql).stream().map(r -> new Coverage(r.str("sensor"), r.date("min_date"),
-                r.date("max_date"), r.lngOr("n", 0))).toList();
+        Map<String, Coverage> combined = new java.util.TreeMap<>();
+        for (var row : queries.coverage(sql)) {
+            var part = new Coverage(row.str("sensor"), row.date("min_date"), row.date("max_date"), row.lngOr("n", 0));
+            combined.merge(part.sensor(), part, (a, b) -> new Coverage(a.sensor(),
+                    a.minDate().isBefore(b.minDate()) ? a.minDate() : b.minDate(),
+                    a.maxDate().isAfter(b.maxDate()) ? a.maxDate() : b.maxDate(),
+                    a.detections() + b.detections()));
+        }
+        return List.copyOf(combined.values());
     }
 
     /** Filtro de sensor canonico: sensor e coluna de texto na grade, sem repeticao e em ordem. */

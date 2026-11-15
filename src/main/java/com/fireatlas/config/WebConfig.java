@@ -18,7 +18,7 @@ public class WebConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**")
                 .allowedOrigins(origins)
-                .allowedMethods("GET", "PUT", "OPTIONS")
+                .allowedMethods("GET", "POST", "PUT", "OPTIONS")
                 .allowCredentials(true)   // necessario para o cookie de perfil anonimo
                 .maxAge(3600);
     }

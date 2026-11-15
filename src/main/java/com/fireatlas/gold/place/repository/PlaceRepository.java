@@ -1,18 +1,17 @@
 package com.fireatlas.gold.place.repository;
 
+import com.fireatlas.gold.bootstrap.repository.AnnualCacheQuery;
 import com.fireatlas.gold.place.entity.City;
 import com.fireatlas.gold.place.entity.Continent;
 import com.fireatlas.gold.place.entity.Country;
 import com.fireatlas.gold.region.repository.TrinoFilters;
-import com.fireatlas.lake.integration.AthenaQuery;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 
 /**
- * Consultas ao catalogo de lugares direto no data lake pelo Athena ({@code h3_places}, tabela Delta no Glue).
- * A tabela e particionada por {@code resolution}: toda consulta leva a particao explicita, senao o Athena varre
- * tudo. O texto do SQL e canonico (literais fixos, sem bind) para o reuso de resultado funcionar.
+ * Catalogo mundial de lugares carregado no mesmo cache duravel da grade de 2026.
+ * Os filtros usam as mesmas colunas da tabela Delta; a carga e iniciada somente pelo bootstrap.
  */
 @Repository("goldPlaceRepository")
 public class PlaceRepository {
@@ -24,10 +23,10 @@ public class PlaceRepository {
     /** A cidade so existe nas resolucoes 5 e 6. */
     private static final int CITY_RES = 5;
 
-    private final AthenaQuery athena;
+    private final AnnualCacheQuery queries;
 
-    public PlaceRepository(AthenaQuery athena) {
-        this.athena = athena;
+    public PlaceRepository(AnnualCacheQuery queries) {
+        this.queries = queries;
     }
 
     public List<Continent> findContinents() {
@@ -35,7 +34,7 @@ public class PlaceRepository {
                 + " FROM " + PLACES
                 + " WHERE resolution = " + COUNTRY_RES + " AND continent IS NOT NULL"
                 + " GROUP BY continent ORDER BY continent";
-        return athena.run(sql).stream()
+        return queries.places(sql).stream()
                 .map(r -> new Continent(r.str("continent"), r.intOr("countries", 0)))
                 .toList();
     }
@@ -49,7 +48,7 @@ public class PlaceRepository {
                 + (continent == null ? "" : " AND continent = " + TrinoFilters.text(continent))
                 + " GROUP BY country_iso_a2"
                 + " ORDER BY coalesce(max(country_name_pt), max(country_name))";
-        return athena.run(sql).stream()
+        return queries.places(sql).stream()
                 .map(r -> new Country(r.str("country_iso_a2"), r.str("iso3"), r.str("name"), r.str("name_pt"),
                         r.str("continent"), r.lngOr("cells", 0)))
                 .toList();
@@ -71,7 +70,7 @@ public class PlaceRepository {
                 + " GROUP BY city_geonameid"
                 + " ORDER BY cells DESC, name"
                 + " LIMIT " + limit;
-        return athena.run(sql).stream()
+        return queries.places(sql).stream()
                 .map(r -> new City(r.lngOr("city_geonameid", 0), r.str("name"), r.str("country"),
                         r.lngOr("cells", 0), r.dblOr("nearest", 0)))
                 .toList();

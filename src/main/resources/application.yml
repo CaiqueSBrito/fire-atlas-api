@@ -31,11 +31,17 @@ fireatlas:
     access-key-id: ${AWS_ACCESS_KEY_ID:}       # vazio = cadeia padrao da AWS (perfil local ou IAM Role)
     secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
     session-token: ${AWS_SESSION_TOKEN:}
-  athena:                                      # consulta a gold direto no S3 (nada materializado)
+  athena:                                      # exportacao projetada do cache e consultas dos demais produtos
     database: ${ATHENA_DATABASE:fireatlas_gold}        # catalogo Glue com as tabelas Delta
     workgroup: ${ATHENA_WORKGROUP:fireatlas-api}       # workgroup com teto de bytes por consulta
     result-reuse-minutes: ${ATHENA_RESULT_REUSE_MINUTES:1440}   # validade do reuso de resultado (max 10080)
     timeout-ms: ${ATHENA_TIMEOUT_MS:30000}
+  bootstrap:
+    refresh-hours: ${BOOTSTRAP_REFRESH_HOURS:6}
+    import-workers: ${BOOTSTRAP_IMPORT_WORKERS:2} # 1..4; cada trabalhador tem conexao e DuckDB proprios
+    export-concurrency: ${BOOTSTRAP_EXPORT_CONCURRENCY:2} # UNLOADs simultaneos, limitados
+    export-timeout-ms: ${BOOTSTRAP_EXPORT_TIMEOUT_MS:300000}
+    export-prefix: ${BOOTSTRAP_EXPORT_PREFIX:} # vazio: destino do workgroup + bootstrap/2026/
   limits:
     max-days-points: 366
     max-days-compare: 400
