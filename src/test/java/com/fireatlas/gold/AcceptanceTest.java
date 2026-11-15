@@ -867,6 +867,34 @@ class AcceptanceTest {
     }
 
     @Test
+    @Order(23)
+    void mapa_harmonizado_soma_o_periodo_por_celula_e_informa_os_dias_com_atividade() throws Exception {
+        seedActivity();
+        String cell3 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 3));
+        String cell4 = H3Index.toHex(TestH3.cell(-10.5, -55.5, 4));
+        mvc.perform(get("/api/v2/activity/cells").param("cells", cell3).param("start", "2026-09-01")
+                        .param("end", "2026-09-30").param("zoom", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resolution").value(3))
+                .andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.cells[0].h3").value(cell3))
+                .andExpect(jsonPath("$.cells[0].harmonized").value(54.0))
+                .andExpect(jsonPath("$.cells[0].daysWithData").value(27))
+                .andExpect(jsonPath("$.cells[0].firstDay").value("2026-09-01"))
+                .andExpect(jsonPath("$.cells[0].lastDay").value("2026-09-30"))
+                .andExpect(jsonPath("$.meta.unitLabelPt").value(containsString("equivalentes ao MODIS Aqua")));
+        mvc.perform(get("/api/v2/activity/cells").param("cells", cell3).param("start", "2026-09-05")
+                        .param("end", "2026-09-15").param("zoom", "4"))
+                .andExpect(jsonPath("$.cells[0].h3").value(cell4))
+                .andExpect(jsonPath("$.cells[0].firstDay").value("2026-09-05"))
+                .andExpect(jsonPath("$.cells[0].lastDay").value("2026-09-15"));
+        mvc.perform(get("/api/v2/activity/cells").param("cells", cell3).param("start", "2026-09-10")
+                        .param("end", "2026-09-12").param("zoom", "3"))
+                .andExpect(jsonPath("$.count").value(0))
+                .andExpect(jsonPath("$.message").value(containsString("Sem dados")));
+    }
+
+    @Test
     @Order(24)
     void somas_mensais_ficam_em_ordem_e_marcam_mes_completo_e_dias_com_dado() throws Exception {
         seedActivity();

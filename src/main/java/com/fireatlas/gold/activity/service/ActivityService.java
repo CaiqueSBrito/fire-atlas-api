@@ -72,7 +72,7 @@ public class ActivityService {
         boolean truncated = found.size() > Region.MAX_MAP_CELLS;
         List<ActivityCellItem> cells = found.stream().limit(Region.MAX_MAP_CELLS)
                 .map(c -> new ActivityCellItem(H3Index.toHex(c.cell()), cover.res(), c.harmonized(), c.contributing(),
-                        c.daysWithData(), c.modisDetections(), c.viirsDetections()))
+                        c.daysWithData(), c.modisDetections(), c.viirsDetections(), c.firstDay(), c.lastDay()))
                 .toList();
         double total = cells.stream().mapToDouble(ActivityCellItem::harmonized).sum();
         return new ActivityCellsResponse(cover.res(), cells.size(), truncated, total, cells,

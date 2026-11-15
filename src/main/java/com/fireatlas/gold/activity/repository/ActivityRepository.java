@@ -68,7 +68,9 @@ public class ActivityRepository {
                        count(DISTINCT day) FILTER (WHERE contributing > 0) AS days_with_data,
                        sum(coalesce(detections_terra, 0) + coalesce(detections_aqua, 0)) AS modis,
                        sum(coalesce(detections_snpp, 0) + coalesce(detections_noaa20, 0)
-                           + coalesce(detections_noaa21, 0)) AS viirs
+                           + coalesce(detections_noaa21, 0)) AS viirs,
+                       min(day) FILTER (WHERE (harmonized > 0 OR coalesce(detections_terra, 0) + coalesce(detections_aqua, 0) + coalesce(detections_snpp, 0) + coalesce(detections_noaa20, 0) + coalesce(detections_noaa21, 0) > 0)) AS first_day,
+                       max(day) FILTER (WHERE (harmonized > 0 OR coalesce(detections_terra, 0) + coalesce(detections_aqua, 0) + coalesce(detections_snpp, 0) + coalesce(detections_noaa20, 0) + coalesce(detections_noaa21, 0) > 0)) AS last_day
                 FROM harmonized_cell
                 WHERE {cells} AND day BETWEEN :start AND :end
                 GROUP BY cell
@@ -78,7 +80,8 @@ public class ActivityRepository {
                 """.replace("{cells}", SqlFilters.regionSql(cover, "res", "cell"));
         return jdbc.query(sql, params(cover, start, end).addValue("limit", limit + 1), (rs, i) -> new CellActivity(
                 rs.getLong("cell"), rs.getDouble("harmonized"), rs.getInt("contributing"), rs.getInt("days_with_data"),
-                rs.getLong("modis"), rs.getLong("viirs")));
+                rs.getLong("modis"), rs.getLong("viirs"), rs.getObject("first_day", LocalDate.class),
+                rs.getObject("last_day", LocalDate.class)));
     }
 
     private static String binSums() {
