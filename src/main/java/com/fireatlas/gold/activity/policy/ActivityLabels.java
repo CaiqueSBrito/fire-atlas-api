@@ -33,6 +33,9 @@ public final class ActivityLabels {
         w.add("Unidade: celulas ativas equivalentes ao MODIS Aqua; nao e numero de focos nem de incendios.");
         w.add("O dia e o dia local de fogo (06:00 a 06:00 no horario solar local), nao UTC.");
         w.add("contributing = 0 significa sem dado, nao zero fogo.");
+        w.add("temperature: faixas da temperatura de brilho (K) do pixel mais quente da unidade, medida pelo VIIRS I-4 "
+                + "quando basis = viirs e pelo MODIS canal 21/22 quando basis = aqua ou terra; nao e comparavel entre "
+                + "bases e nao e a temperatura da chama; o I-4 satura perto de 367 K.");
         if (!end.isBefore(today)) w.add("O dia corrente fica incompleto ate fechar.");
         if (!end.isBefore(today.minusDays(RECENT_DAYS))) {
             w.add("Meses recentes sao dados NRT (quase em tempo real) e podem mudar.");

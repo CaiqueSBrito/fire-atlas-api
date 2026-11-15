@@ -4,6 +4,7 @@ import com.fireatlas.gold.activity.entity.DayActivity;
 import com.fireatlas.gold.activity.entity.MonthActivity;
 import com.fireatlas.gold.activity.entity.SatelliteDay;
 import com.fireatlas.gold.activity.entity.YearMonthSum;
+import com.fireatlas.gold.activity.policy.TemperatureBins;
 import com.fireatlas.gold.region.entity.Region;
 import com.fireatlas.gold.region.repository.SqlFilters;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -34,18 +36,33 @@ public class ActivityRepository {
                 .addValue("end", end);
     }
 
-    /** Soma por dia local; contributing e o maior numero de satelites contribuintes entre as celulas. */
+    /**
+     * Soma por dia local; contributing e o maior numero de satelites contribuintes entre as celulas. Cada faixa de
+     * brilho e somada (nula quando nenhuma linha a trouxe) e basis e a base de temperatura do dia.
+     */
     public List<DayActivity> findDaily(Region.Cover cover, LocalDate start, LocalDate end) {
         String sql = """
-                SELECT day, sum(harmonized) AS harmonized, max(contributing) AS contributing, count(*) AS n
+                SELECT day, sum(harmonized) AS harmonized, max(contributing) AS contributing, count(*) AS n,
+                       max(basis) AS basis{bins}
                 FROM harmonized_cell
                 WHERE {cells} AND day BETWEEN :start AND :end
                 GROUP BY day
                 ORDER BY day
-                """.replace("{cells}", SqlFilters.regionSql(cover, "res", "cell"));
-        return jdbc.query(sql, params(cover, start, end), (rs, i) -> new DayActivity(
-                rs.getObject("day", LocalDate.class), rs.getDouble("harmonized"), rs.getInt("contributing"),
-                rs.getLong("n")));
+                """.replace("{cells}", SqlFilters.regionSql(cover, "res", "cell")).replace("{bins}", binSums());
+        return jdbc.query(sql, params(cover, start, end), (rs, i) -> {
+            List<Double> bins = new ArrayList<>();
+            for (TemperatureBins.Bin b : TemperatureBins.ALL) bins.add(rs.getObject(b.column(), Double.class));
+            return new DayActivity(rs.getObject("day", LocalDate.class), rs.getDouble("harmonized"),
+                    rs.getInt("contributing"), rs.getLong("n"), rs.getString("basis"), bins);
+        });
+    }
+
+    private static String binSums() {
+        StringBuilder sb = new StringBuilder();
+        for (TemperatureBins.Bin b : TemperatureBins.ALL) {
+            sb.append(", sum(").append(b.column()).append(") AS ").append(b.column());
+        }
+        return sb.toString();
     }
 
     /** Soma por mes; dias com dado = dias em que ao menos uma celula teve satelite contribuindo. */

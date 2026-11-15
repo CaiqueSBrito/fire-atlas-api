@@ -1,5 +1,7 @@
 package com.fireatlas.gold.ingestion.integration;
 
+import com.fireatlas.gold.activity.policy.TemperatureBins;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -21,7 +23,8 @@ import java.util.Set;
  * <p>
  * Linhas rejeitadas, com o motivo contado: {@code data_ausente}, {@code h3_invalido} (ausente ou de resolucao
  * diferente da particao), {@code harmonizado_invalido} (ausente ou negativo) e {@code contribuintes_invalidos}
- * (ausente ou fora de 0 a 5). Atencao: {@code contributing = 0} e valido e significa SEM DADO.
+ * (ausente ou fora de 0 a 5) e {@code temperatura_invalida} (faixa de brilho presente negativa ou nao finita).
+ * As faixas {@code harmonized_t_*} e {@code basis} sao opcionais: arquivos sem elas carregam NULL. Atencao: {@code contributing = 0} e valido e significa SEM DADO.
  */
 public final class HarmonizedFileReader {
 
@@ -32,7 +35,7 @@ public final class HarmonizedFileReader {
 
     /** Colunas do CSV gravado, na ordem esperada pela carga em harmonized_cell. */
     public static final String COPY_COLUMNS = "res, cell, day, harmonized, contributing, " + satelliteColumns()
-            + ", source_key";
+            + ", " + TemperatureBins.columns() + ", basis, source_key";
 
     private HarmonizedFileReader() {}
 
@@ -61,7 +64,8 @@ public final class HarmonizedFileReader {
                     + "WHEN h3_cell IS NULL OR ((h3_cell >> 52) & 15) <> " + resolution + " THEN 'h3_invalido' "
                     + "WHEN harmonized IS NULL OR isnan(harmonized) OR harmonized < 0 THEN 'harmonizado_invalido' "
                     + "WHEN contributing IS NULL OR contributing < 0 OR contributing > 5 "
-                    + "THEN 'contribuintes_invalidos' END AS reason FROM read_parquet(" + file + ") "
+                    + "THEN 'contribuintes_invalidos' "
+                    + binCheck(cols) + "END AS reason FROM read_parquet(" + file + ") "
                     + "WHERE day IS NULL OR day BETWEEN DATE '" + start + "' AND DATE '" + end + "'");
 
             long scanned = 0;
@@ -91,7 +95,8 @@ public final class HarmonizedFileReader {
                             .append(", ").append(opt(cols, "aqua_eq_" + sat, "DOUBLE"));
                 }
                 s.execute("COPY (SELECT " + resolution + " AS res, h3_cell, day, harmonized, "
-                        + "CAST(contributing AS SMALLINT)" + sats + ", " + lit(sourceKey)
+                        + "CAST(contributing AS SMALLINT)" + sats + bins(cols) + ", " + opt(cols, "basis", "VARCHAR")
+                        + ", " + lit(sourceKey)
                         + " AS source_key FROM src WHERE reason IS NULL) TO "
                         + lit(out.toAbsolutePath().toString().replace("\\", "/")) + " (FORMAT csv, HEADER false)");
             }
@@ -99,6 +104,23 @@ public final class HarmonizedFileReader {
         } catch (SQLException e) {
             throw new IOException("Parquet invalido ou ilegivel: " + e.getMessage(), e);
         }
+    }
+
+    private static String binCheck(Set<String> cols) {
+        StringBuilder sb = new StringBuilder();
+        for (TemperatureBins.Bin b : TemperatureBins.ALL) {
+            String c = b.lakeColumn();
+            if (!cols.contains(c)) continue;
+            sb.append("WHEN ").append(c).append(" IS NOT NULL AND (NOT isfinite(CAST(").append(c)
+                    .append(" AS DOUBLE)) OR ").append(c).append(" < 0) THEN 'temperatura_invalida' ");
+        }
+        return sb.toString();
+    }
+
+    private static String bins(Set<String> cols) {
+        StringBuilder sb = new StringBuilder();
+        for (TemperatureBins.Bin b : TemperatureBins.ALL) sb.append(", ").append(opt(cols, b.lakeColumn(), "DOUBLE"));
+        return sb.toString();
     }
 
     private static Set<String> columns(Statement s, String file) throws SQLException {

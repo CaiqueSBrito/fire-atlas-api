@@ -1,5 +1,7 @@
 package com.fireatlas.gold;
 
+import com.fireatlas.gold.activity.entity.DayActivity;
+import com.fireatlas.gold.activity.mapper.ActivityMapper;
 import com.fireatlas.gold.calendar.mapper.CalendarMapper;
 import com.fireatlas.gold.detection.entity.CellAggregate;
 import com.fireatlas.gold.detection.entity.DayTotal;
@@ -11,6 +13,8 @@ import com.fireatlas.gold.sensor.mapper.SensorMapper;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -54,5 +58,32 @@ class MapperTests {
         assertEquals("VIIRS", entry.code());
         assertEquals(375, entry.nominalResolutionMeters());
         assertEquals(List.of(sat), entry.satellites());
+    }
+
+    @Test
+    void activityDaySplitsHarmonizedIntoTheSevenTemperatureBinsInContractOrder() {
+        var month = YearMonth.of(2026, 11);
+        var days = new ActivityMapper().toDays(month, List.of(
+                new DayActivity(month.atDay(1), 10.0, 2, 4, "viirs", Arrays.asList(1.0, 2.0, null, 3.0, 1.5, 2.0, 0.5)),
+                new DayActivity(month.atDay(2), 4.0, 2, 1, "aqua", Arrays.asList(null, null, null, null, null, null,
+                        null)),
+                new DayActivity(month.atDay(3), 0.0, 0, 1, "viirs", Arrays.asList(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))));
+
+        var bins = days.get(0).temperature();
+        assertEquals("viirs", days.get(0).basis());
+        assertEquals(List.of("lt320", "320", "330", "340", "350", "ge360", "none"),
+                bins.stream().map(b -> b.key()).toList());
+        assertNull(bins.get(0).fromK());
+        assertEquals(320.0, bins.get(0).toK());
+        assertEquals(360.0, bins.get(5).fromK());
+        assertNull(bins.get(5).toK());
+        assertEquals(0.0, bins.get(2).harmonized());          // faixa nula num conjunto presente vale 0
+        assertEquals(days.get(0).harmonized(), bins.stream().mapToDouble(b -> b.harmonized()).sum(), 1e-9);
+
+        assertNull(days.get(1).temperature());                 // arquivo antigo, sem faixas
+        assertEquals("aqua", days.get(1).basis());
+        assertNull(days.get(2).temperature());                 // contributing = 0: sem dado
+        assertNull(days.get(2).basis());
+        assertNull(days.get(3).temperature());                 // dia sem linha
     }
 }

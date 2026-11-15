@@ -4,10 +4,12 @@ import com.fireatlas.gold.activity.dto.ActivityBaselineYear;
 import com.fireatlas.gold.activity.dto.ActivityDayItem;
 import com.fireatlas.gold.activity.dto.ActivityMonthItem;
 import com.fireatlas.gold.activity.dto.SatelliteDayItem;
+import com.fireatlas.gold.activity.dto.TemperatureBin;
 import com.fireatlas.gold.activity.entity.DayActivity;
 import com.fireatlas.gold.activity.entity.MonthActivity;
 import com.fireatlas.gold.activity.entity.SatelliteDay;
 import com.fireatlas.gold.activity.entity.YearMonthSum;
+import com.fireatlas.gold.activity.policy.TemperatureBins;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
@@ -32,7 +34,19 @@ public class ActivityMapper {
             DayActivity a = byDay.get(date);
             boolean hasData = a != null && a.contributing() > 0;
             out.add(new ActivityDayItem(date, hasData ? a.harmonized() : null, a == null ? 0 : a.contributing(),
-                    hasData));
+                    hasData, hasData ? a.basis() : null, hasData ? temperature(a.bins()) : null));
+        }
+        return out;
+    }
+
+    /** As 7 faixas na ordem do contrato; nulo se nenhuma veio importada. Faixa nula num conjunto presente vale 0. */
+    private static List<TemperatureBin> temperature(List<Double> sums) {
+        if (sums == null || sums.stream().allMatch(java.util.Objects::isNull)) return null;
+        List<TemperatureBin> out = new ArrayList<>();
+        for (int i = 0; i < TemperatureBins.ALL.size(); i++) {
+            TemperatureBins.Bin b = TemperatureBins.ALL.get(i);
+            Double v = i < sums.size() ? sums.get(i) : null;
+            out.add(new TemperatureBin(b.key(), b.fromK(), b.toK(), v == null ? 0.0 : v));
         }
         return out;
     }
