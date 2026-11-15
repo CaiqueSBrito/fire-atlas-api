@@ -127,13 +127,19 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver \
 - So os arquivos **ativos** do Delta entram (log + checkpoint). Cada arquivo e uma transacao, idempotente, conferida com o
   `numRecords` do log; falhas e linhas rejeitadas (ex.: FRP negativo) ficam em `lake_import_log`.
 - Prata: a identidade do foco e o `record_id`; reimportar nao duplica.
-- Migrations: V7–V9 (gold), V10 (identidade da prata e `forecast_run`).
+- Migrations: V7–V9 (gold), V10 (identidade da prata e `forecast_run`), V11 (estado da sincronizacao), V12 (faixas de
+  temperatura da atividade harmonizada).
 
 ### Rotas gold (`/api/v2`)
 
 Mapa (`/detections`, `/coverage`), calendario, ranking, analise, `/forecast`, lugares (`country`, `continent`, `city` + `cityRadiusKm`),
 sensores e `/activity/{calendar,monthly,anomaly,availability}` (atividade harmonizada: **celulas ativas equivalentes ao MODIS Aqua**,
 nao e contagem de focos; `contributing = 0` significa sem dado). Documentacao completa no Swagger.
+
+Cada dia de `/activity/calendar` traz `basis` (`viirs`, `aqua` ou `terra`: sensor que mediu o brilho) e `temperature`: 7
+faixas de 10 K da temperatura de brilho (`lt320`, `320`…`350`, `ge360`, `none`), cada uma com `fromK`, `toK` e
+`harmonized`; somam o `harmonized` do dia. Vem `null` em dia sem dado ou quando a gold importada nao tem as colunas
+`harmonized_t_*` (V12; arquivos antigos continuam validos).
 
 `/forecast` aceita `cells` de qualquer resolucao (a celula de resolucao 6 entra pelo ancestral, sem expandir filhas) ou um
 lugar, e devolve `summary` (celulas, ativas, maior e media da probabilidade na regiao inteira, sem os filtros da lista) e
