@@ -26,12 +26,12 @@ class ArchitectureTest {
     static final ArchRule dependencias_entre_camadas = layeredArchitecture()
             .consideringOnlyDependenciesInLayers()
             .layer("Controller").definedBy("com.fireatlas..controller..")     // apresentacao REST
-            .layer("Cli").definedBy("com.fireatlas..cli..")                    // apresentacao por linha de comando
+            .optionalLayer("Cli").definedBy("com.fireatlas..cli..")            // apresentacao por linha de comando
             .layer("Service").definedBy("com.fireatlas..service..")            // casos de uso
             .layer("Mapper").definedBy("com.fireatlas..mapper..")              // entidade <-> DTO
             .layer("Dto").definedBy("com.fireatlas..dto..")                    // contratos de resposta
             .layer("Repository").definedBy("com.fireatlas..repository..")      // persistencia
-            .layer("Integration").definedBy("com.fireatlas..integration..")    // fonte externa (data lake)
+            .optionalLayer("Integration").definedBy("com.fireatlas..integration..")  // fonte externa (data lake)
             .layer("Domain").definedBy("com.fireatlas..entity..", "com.fireatlas..policy..") // entidades e regras puras
             .whereLayer("Controller").mayNotBeAccessedByAnyLayer()
             .whereLayer("Cli").mayNotBeAccessedByAnyLayer()

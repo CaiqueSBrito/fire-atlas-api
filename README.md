@@ -4,15 +4,17 @@ API (Spring Boot) de focos de calor **MODIS e VIIRS** para o NASA Space Apps 202
 ("Harmonization of MODIS and VIIRS Hot Spots"). Plataforma aberta, sem login.
 
 ```
-Data lake (S3, Delta Lake do time de dados: prata/silver e gold/*)
-        │  sincronizacao automatica da gold ao subir a API + importacao manual (profiles "ingest-silver" e "ingest-gold")
-        ▼
-PostgreSQL + PostGIS  ── detection (particionada por ano, GiST + BRIN)
-        │               ├─ daily_grid (grade 0,1°/dia pre-agregada)
-        │               ├─ lake_import_log (proveniencia das importacoes)
-        ▼               └─ user_preference (perfil anonimo via cookie)
-API REST (/api/v1) ──► Frontend Next.js
+Data lake (S3, Delta Lake do time de dados)
+   prata/silver ──► importacao (profile "ingest-silver") ──► PostgreSQL + PostGIS
+   gold/*       ──► Amazon Athena (catalogo Glue, consulta direta)      │  detection (particionada por ano, GiST + BRIN)
+                                                                        │  sensor/satellite (catalogo estatico)
+                                                                        │  lake_import_log (proveniencia da prata)
+                                                                        └─ user_preference (perfil anonimo via cookie)
+API REST (/api/v1 do Postgres, /api/v2 do Athena) ──► Frontend Next.js
 ```
+
+A camada ouro **nao e materializada**: as rotas `/api/v2` consultam as tabelas Delta direto no S3 pelo Athena
+(~12,4 GB que antes eram baixados a cada primeira carga). Motivacao, medicoes e desenho: `docs/ACESSO-DADOS-S3.md`.
 
 ## Rodar localmente
 
@@ -35,32 +37,35 @@ mvn spring-boot:run             # API em http://localhost:8080 (Flyway cria o sc
 
 Documentacao interativa: `http://localhost:8080/swagger-ui.html` (OpenAPI em `/v3/api-docs`).
 
-## Carregar dados do data lake
+## Dados
 
-### Automatico (ao subir a API)
+### Camada ouro: consulta direta pelo Athena (nada a carregar)
 
-Com `DATALAKE_BUCKET` definido (variavel de ambiente ou `.env`), a API sincroniza a **gold** com o PostGIS em segundo
-plano logo depois de subir; ela ja responde enquanto os dados entram (acompanhe pelo log `lake-sync`). Para cada tabela
-(`map_grid` primeiro, depois `h3_places`, `harmonized/cells`, `harmonized/availability` e `forecast`) compara a versao do
-Delta com a ultima sincronizacao concluida (`lake_sync_state`):
+As rotas `/api/v2` leem as tabelas Delta do catalogo Glue `fireatlas_gold` (`harmonized_cells`,
+`harmonized_availability`, `map_grid`, `h3_places`, `forecast`), apontadas para `s3://<bucket>/gold/*`. Nao ha
+importacao, sincronizacao nem tabela espelho no Postgres: subir a API e instantaneo e o dado novo publicado pelo time
+de dados aparece na consulta seguinte.
 
-- versao igual: nada a fazer (subir de novo e instantaneo);
-- primeira carga: de `LAKE_SYNC_START` (padrao: 1o de janeiro do ano atual) ate hoje — a de 2026 leva varios minutos;
-- versao nova: recarrega do fim da carga anterior menos `LAKE_SYNC_OVERLAP_DAYS` (padrao 7) ate hoje;
-- falha em uma tabela nao impede as outras; ela e tentada de novo na proxima subida.
+Configuracao (todas com padrao, veja `.env.example`): `ATHENA_DATABASE` (padrao `fireatlas_gold`),
+`ATHENA_WORKGROUP` (padrao `fireatlas-api`), `ATHENA_RESULT_REUSE_MINUTES` (padrao 1440) e `ATHENA_TIMEOUT_MS`.
 
-A prata nao entra (so alimenta a `/api/v1`). Anos anteriores (comparacao historica) ou outra janela: use os profiles
-abaixo ou `LAKE_SYNC_START` antes da primeira carga. `LAKE_SYNC_ENABLED=false` desliga.
+O que isso custa e como o custo e contido:
 
-Credenciais AWS: prefira o perfil local (`aws configure`/`aws login`) ou IAM Role. `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
-(e `AWS_SESSION_TOKEN`) tambem sao aceitas pelo ambiente ou pelo `.env` (fora do git; use um usuario so leitura);
-**nunca** no codigo. `DATALAKE_BUCKET` aceita o nome do bucket ou `s3://nome`.
+- cada consulta nova leva ~3 s (piso do Athena) e cobra por byte escaneado (US$ 5/TB);
+- **toda** consulta leva filtro de particao explicito (`resolution`, `year`/`month`): sem ele o Athena varreria a
+  tabela inteira, porque os arquivos nao sao ordenados por dia;
+- o SQL e canonico (celulas ordenadas, datas como literais): com `ResultReuseByAgeConfiguration` ligado, repetir a
+  mesma pergunta dentro da validade responde em ~0,2 s sem escanear nada;
+- o workgroup `fireatlas-api` tem `BytesScannedCutoffPerQuery` de 1 GB, que interrompe consulta fora do esperado;
+- falha ou tempo esgotado no Athena vira `503` (RFC 7807), nao `500`.
 
-### Manual (profiles)
+Permissoes minimas do principal da API: `athena:StartQueryExecution|GetQueryExecution|GetQueryResults|StopQueryExecution|GetWorkGroup`
+no workgroup, `glue:GetDatabase|GetTable|GetPartitions` no catalogo, `s3:GetObject` em `gold/*` e `s3:GetObject|PutObject`
+no prefixo de resultados.
 
-Os dados vem das tabelas Delta publicadas pelo time de dados no S3 (veja a secao "Integracao com o data lake" abaixo):
-a **prata** (`prata/silver`, um foco por linha) alimenta `detection`, e o **gold** alimenta o mapa agregado, os lugares, a
-previsao e a atividade harmonizada.
+### Camada prata: importacao para o Postgres (alimenta a `/api/v1`)
+
+A prata (`prata/silver`, um foco por linha) continua sendo importada para `detection`:
 
 ```bash
 export DATALAKE_BUCKET=<bucket>   # PowerShell: $env:DATALAKE_BUCKET="<bucket>"; ou no .env
@@ -70,6 +75,10 @@ mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver   -Dspring-boot.run
 - So entram as linhas dentro do periodo (e da regiao, se informada); cada arquivo do Delta e uma transacao idempotente.
 - Cada importacao registra arquivo de origem, regiao, periodo, contagens e linhas rejeitadas em `lake_import_log`
   (`GET /api/v1/meta/sources` lista as da prata).
+
+Credenciais AWS: prefira o perfil local (`aws configure`/`aws login`) ou IAM Role. `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
+(e `AWS_SESSION_TOKEN`) tambem sao aceitas pelo ambiente ou pelo `.env` (fora do git; use um usuario so leitura);
+**nunca** no codigo. `DATALAKE_BUCKET` aceita o nome do bucket ou `s3://nome`.
 
 ## Endpoints (`/api/v1`)
 
@@ -89,8 +98,10 @@ Erros de validacao retornam `400` (RFC 7807).
 
 ## Performance
 
-- Tabela particionada por ano + indice GiST (geometria) + BRIN (data): toda consulta usa bbox + datas.
-- Zoom afastado e calendario leem `daily_grid` (pre-agregada), nunca as deteccoes brutas.
+- `/api/v1` (prata no Postgres): tabela particionada por ano + indice GiST (geometria) + BRIN (data); toda consulta usa
+  bbox + datas.
+- `/api/v2` (gold no Athena): poda por particao (`resolution`, `year`/`month`) + reuso de resultado. Consulta nova
+  ~3 s; repeticao da mesma pergunta ~0,2 s sem escanear bytes.
 - Payload limitado (5000 pontos / 20000 celulas, com flag `truncated`), gzip e `Cache-Control`.
 
 ## Cookies / perfil anonimo
@@ -106,29 +117,29 @@ mvn test
 
 ## Integracao com o data lake do time de dados (Delta Lake)
 
-A API importa as tabelas Delta publicadas pelo time de dados. O backend so **le** e **consulta**;
-nao converte coordenadas em H3 (o indice H3 vem pronto do pipeline) e nao recalcula previsao nem harmonizacao.
+O backend so **le** e **consulta**; nao converte coordenadas em H3 (o indice H3 vem pronto do pipeline) e nao
+recalcula previsao nem harmonizacao.
 
-| Profile | Fonte | Destino | Comando |
-|---|---|---|---|
-| `ingest-gold` | `gold/map_grid`, `gold/h3_places`, `gold/forecast`, `gold/harmonized` | `daily_h3`, `h3_place`, `forecast`, `harmonized_cell`, `harmonized_availability` | abaixo |
-| `ingest-silver` | `prata/silver` (um foco por linha) | `detection` (com `record_id` e `h3_r6`) | abaixo |
+| Camada | Fonte | Como e servida |
+|---|---|---|
+| gold | `gold/map_grid`, `gold/h3_places`, `gold/forecast`, `gold/harmonized/{cells,availability}` | Athena sobre as tabelas Delta (catalogo Glue `fireatlas_gold`), sem copia |
+| prata | `prata/silver` (um foco por linha) | profile `ingest-silver` → tabela `detection` (com `record_id` e `h3_r6`) |
 
 ```bash
-# gold: --ingest.dataset = map_grid | places | forecast | harmonized | all
-mvn spring-boot:run -Dspring-boot.run.profiles=ingest-gold \
-  -Dspring-boot.run.arguments="--ingest.dataset=map_grid --ingest.start=2024-08-01 --ingest.end=2024-09-30 --ingest.resolutions=0,1,2,3,4,5,6"
-
 # prata (alimenta a harmonizacao por pareamento); padrao = Brasil, ou --ingest.bbox=minLon,minLat,maxLon,maxLat | global
 mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver \
   -Dspring-boot.run.arguments="--ingest.start=2026-11-10 --ingest.end=2026-11-12"
 ```
 
-- So os arquivos **ativos** do Delta entram (log + checkpoint). Cada arquivo e uma transacao, idempotente, conferida com o
-  `numRecords` do log; falhas e linhas rejeitadas (ex.: FRP negativo) ficam em `lake_import_log`.
-- Prata: a identidade do foco e o `record_id`; reimportar nao duplica.
-- Migrations: V7–V9 (gold), V10 (identidade da prata e `forecast_run`), V11 (estado da sincronizacao), V12 (faixas de
-  temperatura da atividade harmonizada).
+- Prata: so os arquivos **ativos** do Delta entram (log + checkpoint); cada arquivo e uma transacao idempotente,
+  conferida com o `numRecords` do log. A identidade do foco e o `record_id`; reimportar nao duplica. Falhas e linhas
+  rejeitadas ficam em `lake_import_log`.
+- Gold: a leitura e sempre da versao corrente do Delta (os arquivos removidos do log nao entram, por construcao).
+- Criar o catalogo uma vez (ja aplicado nesta conta):
+  `CREATE EXTERNAL TABLE fireatlas_gold.<tabela> LOCATION 's3://<bucket>/gold/<caminho>/' TBLPROPERTIES ('table_type'='DELTA')`.
+  `DROP TABLE` nao funciona para Delta no Athena: use a API do Glue (`aws glue delete-table`).
+- Migrations: V7–V9 (gold materializada, hoje removida), V10 (identidade da prata), V11 (estado da sincronizacao,
+  hoje removido), V12 (faixas de temperatura), **V13 (derruba as tabelas da gold: a leitura passou a ser pelo Athena)**.
 
 ### Rotas gold (`/api/v2`)
 
@@ -138,18 +149,19 @@ nao e contagem de focos; `contributing = 0` significa sem dado). Documentacao co
 
 Cada dia de `/activity/calendar` traz `basis` (`viirs`, `aqua` ou `terra`: sensor que mediu o brilho) e `temperature`: 7
 faixas de 10 K da temperatura de brilho (`lt320`, `320`…`350`, `ge360`, `none`), cada uma com `fromK`, `toK` e
-`harmonized`; somam o `harmonized` do dia. Vem `null` em dia sem dado ou quando a gold importada nao tem as colunas
-`harmonized_t_*` (V12; arquivos antigos continuam validos).
+`harmonized`; somam o `harmonized` do dia. Vem `null` em dia sem dado ou quando os arquivos da gold nao tem as colunas
+`harmonized_t_*` (arquivos antigos continuam validos).
 
 `/forecast` aceita `cells` de qualquer resolucao (a celula de resolucao 6 entra pelo ancestral, sem expandir filhas) ou um
 lugar, e devolve `summary` (celulas, ativas, maior e media da probabilidade na regiao inteira, sem os filtros da lista) e
-as celulas da maior para a menor probabilidade com `countryName`, `cityName` e `cityDistanceKm` de `h3_place`.
+as celulas da maior para a menor probabilidade com `countryName`, `cityName` e `cityDistanceKm` de `h3_places`.
 
 ### Previsao a partir da gold/forecast
 
 Por padrao o provedor preditivo continua desligado (`MODEL_NOT_VALIDATED`). Para servir a previsao do time de dados em
-`/api/v1/predictions`: `fireatlas.prediction.source=forecast-table` (variavel `FIREATLAS_PREDICTION_SOURCE`) depois de importar
-`--ingest.dataset=forecast`. A probabilidade vem pronta do pipeline; a resposta informa emissao, modelo (de `forecast_run`) e horizonte.
+`/api/v1/predictions`: `fireatlas.prediction.source=forecast-table` (variavel `FIREATLAS_PREDICTION_SOURCE`) — nao ha
+nada a importar, a leitura e direto da tabela Delta `gold/forecast`. A probabilidade vem pronta do pipeline; a resposta
+informa emissao, modelo (lido do `commitInfo` do log Delta) e horizonte.
 
 ### Testes de integracao
 
@@ -163,4 +175,4 @@ DATALAKE_BUCKET=<bucket> scripts/atualizar.sh            # ultimos 7 dias, prata
 DATALAKE_BUCKET=<bucket> scripts/atualizar.sh 30 global  # ultimos 30 dias, prata do mundo
 ```
 
-Roda lugares, previsao, atividade harmonizada, grade do mapa e prata; e idempotente (so entra o que mudou) e para na primeira falha.
+Importa so a prata; a gold nao precisa de atualizacao (e consultada direto no S3). Idempotente, para na primeira falha.
