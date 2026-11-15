@@ -1,5 +1,6 @@
 package com.fireatlas.gold.activity.repository;
 
+import com.fireatlas.gold.activity.entity.CellActivity;
 import com.fireatlas.gold.activity.entity.DayActivity;
 import com.fireatlas.gold.activity.entity.MonthActivity;
 import com.fireatlas.gold.activity.entity.SatelliteDay;
@@ -49,6 +50,26 @@ public class ActivityRepository {
             return new DayActivity(r.date("day"), r.dblOr("harmonized", 0), r.intOr("contributing", 0),
                     r.lngOr("n", 0), r.str("basis"), bins);
         }).toList();
+    }
+
+    /**
+     * Soma do periodo por celula, na resolucao da cobertura, da maior para a menor atividade; so celulas com algum
+     * satelite contribuindo. Pede limit+1 para o chamador poder sinalizar truncamento.
+     */
+    public List<CellActivity> findCells(Region.Cover cover, LocalDate start, LocalDate end, int limit) {
+        if (empty(cover)) return List.of();
+        String sql = "SELECT h3_cell, sum(harmonized) AS harmonized, max(contributing) AS contributing,"
+                + " count(DISTINCT day) FILTER (WHERE contributing > 0) AS days_with_data,"
+                + " sum(coalesce(detections_terra, 0) + coalesce(detections_aqua, 0)) AS modis,"
+                + " sum(coalesce(detections_snpp, 0) + coalesce(detections_noaa20, 0)"
+                + " + coalesce(detections_noaa21, 0)) AS viirs"
+                + " FROM " + CELLS
+                + " WHERE " + TrinoFilters.where(cover, "h3_cell", start, end)
+                + " GROUP BY h3_cell HAVING max(contributing) > 0"
+                + " ORDER BY 2 DESC, 1 LIMIT " + (limit + 1);
+        return athena.run(sql).stream().map(r -> new CellActivity(r.lngOr("h3_cell", 0), r.dblOr("harmonized", 0),
+                r.intOr("contributing", 0), r.intOr("days_with_data", 0), r.lngOr("modis", 0), r.lngOr("viirs", 0)))
+                .toList();
     }
 
     private static String binSums() {

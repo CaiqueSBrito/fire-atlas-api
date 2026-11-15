@@ -4,6 +4,8 @@ import com.fireatlas.gold.activity.dto.ActivityAnomalyResponse;
 import com.fireatlas.gold.activity.dto.ActivityAvailabilityResponse;
 import com.fireatlas.gold.activity.dto.ActivityBaselineYear;
 import com.fireatlas.gold.activity.dto.ActivityCalendarResponse;
+import com.fireatlas.gold.activity.dto.ActivityCellItem;
+import com.fireatlas.gold.activity.dto.ActivityCellsResponse;
 import com.fireatlas.gold.activity.dto.ActivityDayItem;
 import com.fireatlas.gold.activity.dto.ActivityMeta;
 import com.fireatlas.gold.activity.dto.ActivityMonthItem;
@@ -18,6 +20,7 @@ import com.fireatlas.gold.activity.policy.BaselineResult;
 import com.fireatlas.gold.activity.policy.MonthBaseline;
 import com.fireatlas.gold.activity.repository.ActivityRepository;
 import com.fireatlas.gold.common.policy.InvalidParameterException;
+import com.fireatlas.gold.h3.policy.H3Index;
 import com.fireatlas.gold.h3.policy.H3Settings;
 import com.fireatlas.gold.region.entity.Region;
 import org.springframework.stereotype.Service;
@@ -60,6 +63,20 @@ public class ActivityService {
         int withData = (int) days.stream().filter(ActivityDayItem::hasData).count();
         return new ActivityCalendarResponse(month.toString(), withData, days,
                 meta(region, cover, month.atDay(1), month.atEndOfMonth()), withData == 0 ? ActivityLabels.NO_DATA : null);
+    }
+
+    /** Mapa harmonizado: celulas da regiao na resolucao do zoom (como /detections), somadas no periodo. */
+    public ActivityCellsResponse cells(Region region, LocalDate start, LocalDate end, int zoom) {
+        Region.Cover cover = region.coverFitting(h3.resolutionForZoom(zoom), Region.MAX_MAP_CELLS);
+        var found = repository.findCells(cover, start, end, Region.MAX_MAP_CELLS);
+        boolean truncated = found.size() > Region.MAX_MAP_CELLS;
+        List<ActivityCellItem> cells = found.stream().limit(Region.MAX_MAP_CELLS)
+                .map(c -> new ActivityCellItem(H3Index.toHex(c.cell()), cover.res(), c.harmonized(), c.contributing(),
+                        c.daysWithData(), c.modisDetections(), c.viirsDetections()))
+                .toList();
+        double total = cells.stream().mapToDouble(ActivityCellItem::harmonized).sum();
+        return new ActivityCellsResponse(cover.res(), cells.size(), truncated, total, cells,
+                meta(region, cover, start, end), cells.isEmpty() ? ActivityLabels.NO_DATA : null);
     }
 
     public ActivityMonthlyResponse monthly(Region region, YearMonth start, YearMonth end) {
