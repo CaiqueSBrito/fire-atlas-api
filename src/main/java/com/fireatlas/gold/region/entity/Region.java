@@ -22,6 +22,9 @@ public final class Region {
     public static final int MAX_MAP_CELLS = 20_000;
     /** Maximo de celulas H3 na cobertura de calendario/serie temporal. */
     public static final int MAX_AGG_CELLS = 5_000;
+    // Cada ID decimal ocupa ate 20 caracteres com separador. 12.000 deixam mais de 22 KB para o restante
+    // do SQL sob o teto de 262.144 bytes do Athena; o limite de resultados do mapa continua independente.
+    private static final int MAX_SQL_CELLS = 12_000;
     /** Resolucao usada por padrao nas consultas por pais ou continente. */
     public static final int PLACE_DEFAULT_RES = 4;
     /** A cidade so existe em h3_places nas resolucoes finas (5 e 6). */
@@ -156,6 +159,7 @@ public final class Region {
             throw new InvalidParameterException("bbox", "esta consulta agregada so aceita cells (indices H3), "
                     + "country, continent ou city: a API nao converte bbox em celulas");
         }
+        maxCells = Math.min(maxCells, MAX_SQL_CELLS);
         for (int r = preferredRes; r >= 0; r--) {
             if (size(r) <= maxCells) return new Cover(r, H3Index.toResolution(cells, r, maxCells));
         }
