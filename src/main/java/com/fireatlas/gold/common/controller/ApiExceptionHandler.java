@@ -50,15 +50,6 @@ public class ApiExceptionHandler {
         return pd;
     }
 
-    /** Falha ou tempo esgotado na consulta ao data lake: 503, com a mesma forma dos demais erros. */
-    @ExceptionHandler(com.fireatlas.gold.common.policy.SourceUnavailableException.class)
-    public ProblemDetail sourceUnavailable(com.fireatlas.gold.common.policy.SourceUnavailableException e) {
-        log.error("Fonte de dados indisponivel: {}", e.getMessage());
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
-        pd.setTitle("Fonte de dados indisponivel");
-        return pd;
-    }
-
     @ExceptionHandler(IllegalArgumentException.class)
     public ProblemDetail badRequest(IllegalArgumentException e) {
         return badRequest(e.getMessage(), List.of(new ParameterError("request", e.getMessage())));

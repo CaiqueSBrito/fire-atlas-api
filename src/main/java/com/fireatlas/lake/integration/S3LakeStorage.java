@@ -2,6 +2,7 @@ package com.fireatlas.lake.integration;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
@@ -26,6 +27,7 @@ import java.util.List;
  * apagada ao terminar.
  */
 @Component("goldS3LakeStorage")
+@Profile({"ingest-gold", "ingest-silver"})
 @Lazy
 public class S3LakeStorage implements LakeStorage, AutoCloseable {
 
