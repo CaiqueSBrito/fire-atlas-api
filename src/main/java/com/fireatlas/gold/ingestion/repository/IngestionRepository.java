@@ -2,6 +2,7 @@ package com.fireatlas.gold.ingestion.repository;
 
 import com.fireatlas.gold.ingestion.entity.ImportLogEntry;
 import com.fireatlas.gold.ingestion.entity.ImportRecord;
+import com.fireatlas.gold.ingestion.entity.SyncState;
 import com.fireatlas.gold.ingestion.integration.AvailabilityFileReader;
 import com.fireatlas.gold.ingestion.integration.ForecastFileReader;
 import com.fireatlas.gold.ingestion.integration.HarmonizedFileReader;
@@ -26,6 +27,7 @@ import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Persistencia da importacao: carga em lote da grade H3 (daily_h3) e registro (lake_import_log).
@@ -86,6 +88,22 @@ public class IngestionRepository {
                     rs.getString("source_sha256"), rs.getObject("min_date", LocalDate.class),
                     rs.getObject("max_date", LocalDate.class), rs.getTimestamp("loaded_at").toInstant());
         });
+    }
+
+    /** Ultima sincronizacao concluida da tabela do data lake; vazio se ela nunca foi sincronizada. */
+    public Optional<SyncState> findSyncState(String table) {
+        return new JdbcTemplate(dataSource).query(
+                "SELECT table_path, version, synced_through FROM lake_sync_state WHERE table_path = ?",
+                (rs, i) -> new SyncState(rs.getString("table_path"), rs.getLong("version"),
+                        rs.getObject("synced_through", LocalDate.class)), table).stream().findFirst();
+    }
+
+    public void saveSyncState(SyncState state) {
+        new JdbcTemplate(dataSource).update("""
+                INSERT INTO lake_sync_state (table_path, version, synced_through) VALUES (?, ?, ?)
+                ON CONFLICT (table_path) DO UPDATE SET version = EXCLUDED.version,
+                    synced_through = EXCLUDED.synced_through, synced_at = now()""",
+                state.table(), state.version(), state.syncedThrough());
     }
 
     /** Unidade de trabalho de um arquivo (uma conexao, sem autocommit). */

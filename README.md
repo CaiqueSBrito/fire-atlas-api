@@ -5,7 +5,7 @@ API (Spring Boot) de focos de calor **MODIS e VIIRS** para o NASA Space Apps 202
 
 ```
 Data lake (S3, Delta Lake do time de dados: prata/silver e gold/*)
-        │  importacao por periodo (profiles "ingest-silver" e "ingest-gold")
+        │  sincronizacao automatica da gold ao subir a API + importacao manual (profiles "ingest-silver" e "ingest-gold")
         ▼
 PostgreSQL + PostGIS  ── detection (particionada por ano, GiST + BRIN)
         │               ├─ daily_grid (grade 0,1°/dia pre-agregada)
@@ -19,21 +19,42 @@ API REST (/api/v1) ──► Frontend Next.js
 Requisitos: Java 21+, Maven, Docker.
 
 ```bash
+cp .env.example .env           # preencha DATALAKE_BUCKET (o .env e lido pela API, nao precisa exportar)
 docker compose up -d            # PostGIS em localhost:5433 (evita conflito com outro Postgres na 5432)
-mvn spring-boot:run             # API em http://localhost:8080 (Flyway cria o schema)
+mvn spring-boot:run             # API em http://localhost:8080 (Flyway cria o schema; a gold e sincronizada sozinha)
 ```
 
 Documentacao interativa: `http://localhost:8080/swagger-ui.html` (OpenAPI em `/v3/api-docs`).
 
 ## Carregar dados do data lake
 
-As credenciais AWS vem do perfil local (`aws configure`) ou de IAM Role — **nunca** coloque chaves no codigo ou no `.env`.
+### Automatico (ao subir a API)
+
+Com `DATALAKE_BUCKET` definido (variavel de ambiente ou `.env`), a API sincroniza a **gold** com o PostGIS em segundo
+plano logo depois de subir; ela ja responde enquanto os dados entram (acompanhe pelo log `lake-sync`). Para cada tabela
+(`map_grid` primeiro, depois `h3_places`, `harmonized/cells`, `harmonized/availability` e `forecast`) compara a versao do
+Delta com a ultima sincronizacao concluida (`lake_sync_state`):
+
+- versao igual: nada a fazer (subir de novo e instantaneo);
+- primeira carga: de `LAKE_SYNC_START` (padrao: 1o de janeiro do ano atual) ate hoje — a de 2026 leva varios minutos;
+- versao nova: recarrega do fim da carga anterior menos `LAKE_SYNC_OVERLAP_DAYS` (padrao 7) ate hoje;
+- falha em uma tabela nao impede as outras; ela e tentada de novo na proxima subida.
+
+A prata nao entra (so alimenta a `/api/v1`). Anos anteriores (comparacao historica) ou outra janela: use os profiles
+abaixo ou `LAKE_SYNC_START` antes da primeira carga. `LAKE_SYNC_ENABLED=false` desliga.
+
+Credenciais AWS: prefira o perfil local (`aws configure`/`aws login`) ou IAM Role. `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
+(e `AWS_SESSION_TOKEN`) tambem sao aceitas pelo ambiente ou pelo `.env` (fora do git; use um usuario so leitura);
+**nunca** no codigo. `DATALAKE_BUCKET` aceita o nome do bucket ou `s3://nome`.
+
+### Manual (profiles)
+
 Os dados vem das tabelas Delta publicadas pelo time de dados no S3 (veja a secao "Integracao com o data lake" abaixo):
 a **prata** (`prata/silver`, um foco por linha) alimenta `detection`, e o **gold** alimenta o mapa agregado, os lugares, a
 previsao e a atividade harmonizada.
 
 ```bash
-export DATALAKE_BUCKET=<bucket>   # PowerShell: $env:DATALAKE_BUCKET="<bucket>"
+export DATALAKE_BUCKET=<bucket>   # PowerShell: $env:DATALAKE_BUCKET="<bucket>"; ou no .env
 mvn spring-boot:run -Dspring-boot.run.profiles=ingest-silver   -Dspring-boot.run.arguments="--ingest.start=2026-11-10 --ingest.end=2026-11-12"
 ```
 

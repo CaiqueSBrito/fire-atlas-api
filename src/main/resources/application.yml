@@ -1,6 +1,8 @@
 spring:
   application:
     name: fire-atlas-api
+  config:
+    import: optional:file:.env[.properties]
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5433/fireatlas}
     username: ${DB_USER:fireatlas}
@@ -26,6 +28,13 @@ fireatlas:
   s3:
     bucket: ${DATALAKE_BUCKET:}
     region: ${AWS_REGION:us-east-2}
+    access-key-id: ${AWS_ACCESS_KEY_ID:}       # vazio = cadeia padrao da AWS (perfil local ou IAM Role)
+    secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+    session-token: ${AWS_SESSION_TOKEN:}
+  sync:
+    enabled: ${LAKE_SYNC_ENABLED:true}         # importa a gold do data lake em segundo plano ao subir a API
+    start: ${LAKE_SYNC_START:}                 # inicio da primeira carga; vazio = 1o de janeiro do ano atual
+    overlap-days: ${LAKE_SYNC_OVERLAP_DAYS:7}  # dias anteriores ao fim da ultima carga que sao recarregados
   limits:
     max-days-points: 366
     max-days-compare: 400
