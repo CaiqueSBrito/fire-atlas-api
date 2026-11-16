@@ -29,23 +29,30 @@ class AnnualCacheSourceTest {
     @Test
     void planProjectsOnlyActive2026SnapshotAndConfirmsEmptyResolutionsBeforeReturning() throws Exception {
         var table = GoldFixtures.table(root, "gold/map_grid/");
-        table.append(List.of(GoldFixtures.Row.viirs(6, 1, "2025-12-31", 5, 2),
-                GoldFixtures.Row.viirs(6, 1, "2026-01-01", 3, 2)));
-        table.overwrite(6, 2026, List.of(GoldFixtures.Row.viirs(6, 2, "2026-11-13", 7, 4)));
+        table.append(List.of(GoldFixtures.Row.viirs(5, 1, "2025-12-31", 5, 2),
+                GoldFixtures.Row.viirs(5, 1, "2026-01-01", 3, 2)));
+        table.overwrite(5, 2026, List.of(GoldFixtures.Row.viirs(5, 2, "2026-11-13", 7, 4)));
         emptyPlaces();
-        var projected = projectGrid(6, "exports/grid/part.parquet", 1);
+        var projected = projectGrid(5, "exports/grid/part.parquet", 1);
         var storage = mockStorage();
         var exports = mock(AnnualCacheExports.class);
-        when(exports.export(eq(1L), eq(0L), anyList(), any())).thenAnswer(invocation -> {
-            List<AnnualCacheExports.Request> requests = invocation.getArgument(2);
-            assertEquals(14, requests.size());
-            assertEquals(1L, requests.stream().filter(r -> r.kind().equals("GRID") && r.resolution() == 6)
-                    .findFirst().orElseThrow().expectedRows());
-            assertEquals(13, requests.stream().filter(r -> Long.valueOf(0).equals(r.expectedRows())).count());
+        when(exports.export(eq(2026), eq(1L), eq(0L), anyList(), any(), any())).thenAnswer(invocation -> {
+            List<AnnualCacheExports.Request> requests = invocation.getArgument(3);
+            // 6 resolucoes x (12 meses da grade + 1 de lugares)
+            assertEquals(78, requests.size());
+            for (int res = 0; res <= 5; res++) {
+                int r = res;
+                assertEquals(java.util.stream.IntStream.rangeClosed(1, 12).boxed().toList(), requests.stream()
+                        .filter(q -> q.kind().equals("GRID") && q.resolution() == r).map(q -> q.month()).sorted().toList());
+            }
+            // O unico mes com linhas sai primeiro: a fila de importacao, que comeca durante a exportacao, recebe-o antes.
+            var first = requests.getFirst();
+            assertEquals(List.of("GRID", 5, 11, 1L), List.of(first.kind(), first.resolution(), first.month(), first.expectedRows()));
+            assertEquals(77, requests.stream().filter(r -> Long.valueOf(0).equals(r.expectedRows())).count());
             return List.of(projected);
         });
         AnnualCacheSource source = source(storage, exports);
-        var plan = source.plan();
+        var plan = source.plan(2026, true);
         assertEquals(List.of(projected), plan.partitions());
         assertThrows(UnsupportedOperationException.class, () -> plan.partitions().clear());
         List<Object[]> rows = new ArrayList<>();
@@ -60,23 +67,81 @@ class AnnualCacheSourceTest {
     @Test
     void refusesSnapshotPublishedWhileAthenaWasExporting() throws Exception {
         var table = GoldFixtures.table(root, "gold/map_grid/");
-        table.append(List.of(GoldFixtures.Row.viirs(6, 1, "2026-01-01", 3, 2)));
+        table.append(List.of(GoldFixtures.Row.viirs(5, 1, "2026-01-01", 3, 2)));
         emptyPlaces();
         var exports = mock(AnnualCacheExports.class);
-        when(exports.export(anyLong(), anyLong(), anyList(), any())).thenAnswer(invocation -> {
-            table.overwrite(6, 2026, List.of(GoldFixtures.Row.viirs(6, 2, "2026-11-13", 7, 4)));
+        when(exports.export(eq(2026), anyLong(), anyLong(), anyList(), any(), any())).thenAnswer(invocation -> {
+            table.overwrite(5, 2026, List.of(GoldFixtures.Row.viirs(5, 2, "2026-11-13", 7, 4)));
             return List.of();
         });
-        var error = assertThrows(java.io.IOException.class, () -> source(mockStorage(), exports).plan());
+        var error = assertThrows(java.io.IOException.class, () -> source(mockStorage(), exports).plan(2026, true));
         assertTrue(error.getMessage().contains("snapshot Delta mudou"));
+    }
+
+    @Test
+    void largePlaceResolutionsAreSplitIntoHashPartsAndSmallOnesStayWhole() throws Exception {
+        GoldFixtures.table(root, "gold/map_grid/").append(List.of(GoldFixtures.Row.viirs(5, 1, "2026-01-01", 3, 2)));
+        Path log = root.resolve("gold/h3_places/_delta_log");
+        Files.createDirectories(log);
+        Files.writeString(log.resolve("00000000000000000000.json"),
+                "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}\n" + placesAdd(3, 300_000)
+                        + placesAdd(4, 425_905) + placesAdd(5, 2_234_335));
+        var exports = mock(AnnualCacheExports.class);
+        when(exports.export(eq(2026), anyLong(), anyLong(), anyList(), any(), any())).thenAnswer(invocation -> {
+            List<AnnualCacheExports.Request> requests = invocation.getArgument(3);
+            var places = requests.stream().filter(r -> r.kind().equals("PLACES")).toList();
+            assertEquals(List.of(AnnualCacheExports.Request.places(3, 300_000L)),
+                    places.stream().filter(r -> r.resolution() == 3).toList());
+            assertEquals(List.of(AnnualCacheExports.Request.placesPart(4, 1, 2), AnnualCacheExports.Request.placesPart(4, 2, 2)),
+                    places.stream().filter(r -> r.resolution() == 4).toList());
+            assertEquals(java.util.stream.IntStream.rangeClosed(1, 8).mapToObj(p -> AnnualCacheExports.Request.placesPart(5, p, 8)).toList(),
+                    places.stream().filter(r -> r.resolution() == 5).toList());
+            return List.of();
+        });
+        source(mockStorage(), exports).plan(2026, true);
+        verify(exports).export(eq(2026), anyLong(), anyLong(), anyList(), any(), any());
+    }
+
+    @Test
+    void historicalYearsComeFromActiveManifestAndHistoricalPlanNeverReadsPlaces() throws Exception {
+        var table = GoldFixtures.table(root, "gold/map_grid/");
+        table.append(List.of(GoldFixtures.Row.viirs(5, 1, "2025-01-01", 3, 2),
+                GoldFixtures.Row.viirs(4, 2, "2025-12-31", 4, 2),
+                GoldFixtures.Row.viirs(3, 3, "2023-06-01", 5, 2),
+                GoldFixtures.Row.viirs(2, 4, "1999-01-01", 6, 2),
+                GoldFixtures.Row.viirs(5, 5, "2026-01-01", 7, 2),
+                GoldFixtures.Row.viirs(6, 6, "1998-01-01", 8, 2)));
+        var storage = mockStorage();
+        var exports = mock(AnnualCacheExports.class);
+        when(exports.export(eq(2025), eq(0L), eq(-1L), anyList(), any(), any())).thenAnswer(invocation -> {
+            List<AnnualCacheExports.Request> requests = invocation.getArgument(3);
+            assertEquals(72, requests.size());
+            assertTrue(requests.stream().allMatch(r -> r.kind().equals("GRID") && r.resolution() <= 5));
+            assertEquals(2L, requests.stream().map(AnnualCacheExports.Request::expectedRows).mapToLong(Long::longValue).sum());
+            return List.of();
+        });
+        var source = source(storage, exports);
+        assertEquals(List.of(2025, 2023, 1999), source.historicalYears());
+        assertEquals(-1L, source.plan(2025, false).placesVersion());
+        verify(storage, never()).list(startsWith("gold/h3_places/"));
+        verify(storage, never()).read(startsWith("gold/h3_places/"));
+        assertThrows(IllegalArgumentException.class, () -> source.plan(2025, true));
+        assertThrows(IllegalArgumentException.class, () -> source.plan(0, false));
+        assertThrows(IllegalArgumentException.class, () -> source.plan(2027, false));
+    }
+
+    private static String placesAdd(int resolution, long rows) {
+        return "{\"add\":{\"path\":\"resolution=" + resolution + "/part.parquet\",\"partitionValues\":{\"resolution\":\""
+                + resolution + "\"},\"size\":1,\"modificationTime\":0,\"dataChange\":true,\"stats\":\"{\\\"numRecords\\\":"
+                + rows + "}\"}}\n";
     }
 
     @Test
     void streamsBoundedProjectedBatchesAndReleasesFileOnConsumerFailure() throws Exception {
         List<GoldFixtures.Row> rows = new ArrayList<>();
-        for (long i = 1; i <= 2501; i++) rows.add(GoldFixtures.Row.viirs(6, i, "2026-11-13", 1, 2));
+        for (long i = 1; i <= 2501; i++) rows.add(GoldFixtures.Row.viirs(5, i, "2026-11-13", 1, 2));
         GoldFixtures.table(root, "gold/map_grid/").append(rows);
-        var projected = projectGrid(6, "exports/grid/part.parquet", 2501);
+        var projected = projectGrid(5, "exports/grid/part.parquet", 2501);
         var storage = mockStorage();
         AnnualCacheSource source = source(storage, mock(AnnualCacheExports.class));
         List<Integer> sizes = new ArrayList<>();
@@ -92,12 +157,12 @@ class AnnualCacheSourceTest {
     @Test
     void independentWorkersReadDifferentProjectedFilesAndCleanDistinctTemporaries() throws Exception {
         List<GoldFixtures.Row> rows = new ArrayList<>();
-        for (int res : List.of(5, 6)) {
+        for (int res : List.of(4, 5)) {
             for (long cell = 1; cell <= 1001; cell++) rows.add(GoldFixtures.Row.viirs(res, cell, "2026-11-13", 1, 2));
         }
         GoldFixtures.table(root, "gold/map_grid/").append(rows);
-        var first = projectGrid(5, "exports/a/part.parquet", 1001);
-        var second = projectGrid(6, "exports/b/part.parquet", 1001);
+        var first = projectGrid(4, "exports/a/part.parquet", 1001);
+        var second = projectGrid(5, "exports/b/part.parquet", 1001);
         var storage = mockStorage();
         var downloaded = new ConcurrentLinkedQueue<Path>();
         var local = new GoldFixtures.LocalStorage(root);
@@ -143,7 +208,7 @@ class AnnualCacheSourceTest {
                     + "7.25::DOUBLE AS city_distance_km, -3.14::DOUBLE AS latitude, -59.91::DOUBLE AS longitude) "
                     + "TO '" + literal(file) + "' (FORMAT PARQUET, COMPRESSION ZSTD)");
         }
-        var partition = new AnnualCacheSource.Partition("s3://results/exports/places/part.parquet", "PLACES", 6, -1, 1L, false);
+        var partition = new AnnualCacheSource.Partition("s3://results/exports/places/part.parquet", "PLACES", 5, -1, 1L, false);
         List<Object[]> rows = new ArrayList<>();
         assertEquals(1, source(mockStorage(), mock(AnnualCacheExports.class)).stream(partition, rows::addAll));
         assertEquals(12, rows.getFirst().length);
@@ -154,7 +219,7 @@ class AnnualCacheSourceTest {
     @Test
     void originalParquetKeysAreRejectedRatherThanSilentlyFallingBack() throws Exception {
         var storage = mockStorage();
-        var raw = new AnnualCacheSource.Partition("gold/map_grid/part.parquet", "GRID", 6, 100, 1L, false);
+        var raw = new AnnualCacheSource.Partition("gold/map_grid/part.parquet", "GRID", 5, 100, 1L, false);
         assertThrows(java.io.IOException.class, () -> source(storage, mock(AnnualCacheExports.class)).stream(raw, batch -> {}));
         verify(storage, never()).download(anyString());
         verify(storage, never()).downloadLocation(anyString());

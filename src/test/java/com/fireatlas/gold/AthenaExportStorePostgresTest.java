@@ -34,7 +34,13 @@ class AthenaExportStorePostgresTest {
         jdbc = new JdbcTemplate(dataSource);
         new ResourceDatabasePopulator(new ClassPathResource("db/migration/V14__annual_grid_cache.sql"),
                 new ClassPathResource("db/migration/V15__annual_cache_postgis.sql"),
-                new ClassPathResource("db/migration/V16__annual_athena_exports.sql")).execute(dataSource);
+                new ClassPathResource("db/migration/V16__annual_athena_exports.sql"),
+                new ClassPathResource("db/migration/V17__annual_athena_monthly_exports.sql"),
+                new ClassPathResource("db/migration/V18__annual_cache_direct_copy.sql"),
+                new ClassPathResource("db/migration/V19__annual_athena_export_parts.sql"),
+                new ClassPathResource("db/migration/V20__annual_cache_unlogged.sql"),
+                new ClassPathResource("db/migration/V21__annual_cache_deferred_indexes.sql"),
+                new ClassPathResource("db/migration/V22__annual_cache_finalization_progress.sql")).execute(dataSource);
     }
 
     @AfterEach
@@ -44,7 +50,7 @@ class AthenaExportStorePostgresTest {
 
     @Test
     void pendingTokensRunningQueriesAndCompletedManifestsSurviveNewRepositoryInstances() throws Exception {
-        var key = new AthenaExportStore.Key("snapshot", "GRID", 6);
+        var key = new AthenaExportStore.Key("snapshot", "GRID", 6, 11, 0);
         var store = new AthenaExportStore(jdbc);
         var pending = store.begin(key, "token-1", "s3://results/export/attempt-1/");
         assertEquals("pending", new AthenaExportStore(jdbc).find(key).state());
@@ -67,12 +73,12 @@ class AthenaExportStorePostgresTest {
     }
 
     @Test
-    void onlyTerminalFailureReplacesAttemptAndDoesNotTouchOtherCompletedPartitions() throws Exception {
+    void onlyTerminalFailureReplacesAttemptAndDoesNotTouchOtherSlicesOfSameResolution() throws Exception {
         var store = new AthenaExportStore(jdbc);
-        var first = store.begin(new AthenaExportStore.Key("snapshot", "GRID", 0), "token-0", "s3://results/a/");
+        var first = store.begin(new AthenaExportStore.Key("snapshot", "PLACES", 6, 0, 1), "token-0", "s3://results/a/");
         store.started(first, "query-0");
         store.complete(first, "s3://results/query-0-manifest.csv", List.of(first.prefix() + "part"));
-        var second = store.begin(new AthenaExportStore.Key("snapshot", "GRID", 1), "token-1", "s3://results/b/");
+        var second = store.begin(new AthenaExportStore.Key("snapshot", "PLACES", 6, 0, 2), "token-1", "s3://results/b/");
         store.started(second, "query-1");
         store.failed(second);
         var retry = new AthenaExportStore(jdbc).begin(second.key(), "token-2", "s3://results/c/");

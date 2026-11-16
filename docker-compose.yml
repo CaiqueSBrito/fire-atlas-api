@@ -1,6 +1,22 @@
 services:
   db:
     image: postgis/postgis:16-3.4
+    # Carga anual (COPY de dezenas de milhoes de linhas): cache maior e WAL folgado evitam checkpoints forcados.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - wal_compression=on
+      - -c
+      - maintenance_work_mem=256MB
+    shm_size: 1g
+    # Cache anual sem WAL (V20) so sobrevive a desligamento limpo: o padrao de 10 s pode virar SIGKILL no checkpoint.
+    stop_grace_period: 2m
     environment:
       POSTGRES_DB: fireatlas
       POSTGRES_USER: fireatlas

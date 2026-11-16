@@ -24,7 +24,7 @@ import java.util.stream.Stream;
 
 /**
  * Somente para testes: fabrica uma tabela Delta no formato da gold (grade H3 por dia e sensor, particionada por
- * resolution e year) em uma pasta local, com Parquet de verdade (DuckDB) e o _delta_log escrito a mao. Faz o papel
+ * resolution, year e month) em uma pasta local, com Parquet de verdade (DuckDB) e o _delta_log escrito a mao. Faz o papel
  * do pipeline que gera a gold: o backend so le.
  */
 public final class GoldFixtures {
@@ -45,6 +45,10 @@ public final class GoldFixtures {
 
         int year() {
             return Integer.parseInt(day.substring(0, 4));
+        }
+
+        int month() {
+            return Integer.parseInt(day.substring(5, 7));
         }
     }
 
@@ -71,13 +75,13 @@ public final class GoldFixtures {
             return root.resolve(prefix);
         }
 
-        /** Nova versao: adiciona as linhas (um arquivo por resolucao e ano). */
+        /** Nova versao: adiciona as linhas (um arquivo por resolucao, ano e mes). */
         Table append(List<Row> rows) throws Exception {
             List<String> lines = new ArrayList<>();
             if (version < 0) {
                 lines.add("{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}");
                 lines.add("{\"metaData\":{\"id\":\"" + UUID.randomUUID() + "\",\"format\":{\"provider\":\"parquet\","
-                        + "\"options\":{}},\"schemaString\":\"{}\",\"partitionColumns\":[\"resolution\",\"year\"],"
+                        + "\"options\":{}},\"schemaString\":\"{}\",\"partitionColumns\":[\"resolution\",\"year\",\"month\"],"
                         + "\"createdTime\":0,\"configuration\":{}}}");
             }
             lines.addAll(writeFiles(rows));
@@ -85,7 +89,7 @@ public final class GoldFixtures {
             return this;
         }
 
-        /** Nova versao que substitui a particao (resolucao, ano): remove o(s) arquivo(s) antigo(s) e adiciona o novo. */
+        /** Nova versao que substitui a resolucao no ano (todos os meses), como o gold-map: remove os arquivos antigos. */
         Table overwrite(int res, int year, List<Row> rows) throws Exception {
             List<String> lines = new ArrayList<>();
             String part = "resolution=" + res + "/year=" + year + "/";
@@ -105,21 +109,22 @@ public final class GoldFixtures {
             Path log = tableDir().resolve("_delta_log");
             String name = String.format("%020d.checkpoint.parquet", version);
             try (Connection c = DriverManager.getConnection("jdbc:duckdb:"); Statement s = c.createStatement()) {
-                s.execute("CREATE TABLE ck (path VARCHAR, res VARCHAR, yr VARCHAR, size BIGINT, stats VARCHAR)");
-                try (PreparedStatement ps = c.prepareStatement("INSERT INTO ck VALUES (?, ?, ?, ?, ?)")) {
+                s.execute("CREATE TABLE ck (path VARCHAR, res VARCHAR, yr VARCHAR, mo VARCHAR, size BIGINT, stats VARCHAR)");
+                try (PreparedStatement ps = c.prepareStatement("INSERT INTO ck VALUES (?, ?, ?, ?, ?, ?)")) {
                     for (String line : activeAdds.values()) {
                         var node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(line).get("add");
                         ps.setString(1, node.get("path").asText());
                         ps.setString(2, node.get("partitionValues").get("resolution").asText());
                         ps.setString(3, node.get("partitionValues").get("year").asText());
-                        ps.setLong(4, node.get("size").asLong());
-                        ps.setString(5, node.get("stats").asText());
+                        ps.setString(4, node.get("partitionValues").get("month").asText());
+                        ps.setLong(5, node.get("size").asLong());
+                        ps.setString(6, node.get("stats").asText());
                         ps.addBatch();
                     }
                     ps.executeBatch();
                 }
-                s.execute("COPY (SELECT struct_pack(path := path, partitionValues := map(['resolution', 'year'], "
-                        + "[res, yr]), size := size, stats := stats) AS \"add\" FROM ck) TO '"
+                s.execute("COPY (SELECT struct_pack(path := path, partitionValues := map(['resolution', 'year', 'month'], "
+                        + "[res, yr, mo]), size := size, stats := stats) AS \"add\" FROM ck) TO '"
                         + log.resolve(name).toString().replace("\\", "/") + "' (FORMAT parquet)");
             }
             Files.writeString(log.resolve("_last_checkpoint"), "{\"version\":" + version + ",\"size\":1}",
@@ -139,12 +144,13 @@ public final class GoldFixtures {
             List<Row> rows = aggregate(input);
             List<String> lines = new ArrayList<>();
             Map<String, List<Row>> groups = rows.stream().collect(Collectors.groupingBy(
-                    r -> r.res() + "/" + r.year(), TreeMap::new, Collectors.toList()));
+                    r -> r.res() + "/" + r.year() + "/" + r.month(), TreeMap::new, Collectors.toList()));
             for (var g : groups.entrySet()) {
                 List<Row> part = g.getValue();
                 int res = part.get(0).res();
                 int year = part.get(0).year();
-                String rel = "resolution=" + res + "/year=" + year + "/part-00000-" + UUID.randomUUID()
+                int month = part.get(0).month();
+                String rel = "resolution=" + res + "/year=" + year + "/month=" + month + "/part-00000-" + UUID.randomUUID()
                         + "-c000.zstd.parquet";
                 Path file = tableDir().resolve(rel);
                 Files.createDirectories(file.getParent());
@@ -154,7 +160,7 @@ public final class GoldFixtures {
                 String stats = "{\"numRecords\":" + part.size() + ",\"minValues\":{\"day\":\"" + min
                         + "\"},\"maxValues\":{\"day\":\"" + max + "\"}}";
                 String add = "{\"add\":{\"path\":\"" + rel + "\",\"partitionValues\":{\"year\":\"" + year
-                        + "\",\"resolution\":\"" + res + "\"},\"size\":" + Files.size(file)
+                        + "\",\"month\":\"" + month + "\",\"resolution\":\"" + res + "\"},\"size\":" + Files.size(file)
                         + ",\"modificationTime\":0,\"dataChange\":true,\"stats\":"
                         + new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(stats) + "}}";
                 activeAdds.put(rel, add);

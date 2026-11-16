@@ -21,6 +21,8 @@ import java.util.function.Consumer;
 public class AnnualCacheSource {
     public static final int YEAR = 2026;
     public static final int BATCH_SIZE = 1000;
+    /** Lugares acima disto viram partes (ate 8), evitando que uma resolucao grande segure a carga sozinha. */
+    public static final long PLACES_ROWS_PER_PART = 300_000;
     public static final List<String> GRID_COLUMNS = List.of("day", "sensor", "h3_cell", "detections",
             "frp_sum_mw", "frp_max_mw", "viirs_confidence_low", "viirs_confidence_nominal",
             "viirs_confidence_high", "modis_confidence_mean");
@@ -41,44 +43,82 @@ public class AnnualCacheSource {
         this.exports = exports;
     }
 
-    public Plan plan() throws IOException {
-        return plan(message -> {});
+    public Plan plan(int year, boolean includePlaces) throws IOException {
+        return plan(year, includePlaces, message -> {}, AnnualCacheExports.Listener.NONE);
     }
 
-    public Plan plan(Consumer<String> progress) throws IOException {
+    public List<Integer> historicalYears() throws IOException {
+        return DeltaTable.load(storage.getObject(), "gold/map_grid/").files().stream()
+                .filter(file -> file.resolution() >= 0 && file.resolution() <= 5)
+                .map(DeltaTable.DataFile::year).filter(year -> year >= 1 && year < YEAR)
+                .distinct().sorted(java.util.Comparator.reverseOrder()).toList();
+    }
+
+    static void validateYear(int year) {
+        if (year < 1 || year > YEAR) throw new IllegalArgumentException("ano invalido para cache: " + year);
+    }
+
+    /**
+     * O listener recebe cada exportacao assim que termina; a importacao pode correr em paralelo com o Athena.
+     * O Plan so volta depois de reconferir as versoes Delta: so ele autoriza publicar o cache.
+     */
+    public Plan plan(int year, boolean includePlaces, Consumer<String> progress, AnnualCacheExports.Listener listener) throws IOException {
+        validateYear(year);
+        if (includePlaces && year != YEAR) throw new IllegalArgumentException("lugares pertencem ao cache de " + YEAR);
         var lake = storage.getObject();
         var grid = DeltaTable.load(lake, "gold/map_grid/");
-        var places = DeltaTable.loadRaw(lake, "gold/h3_places/");
-        Long[] gridRows = new Long[7];
-        Long[] placeRows = new Long[7];
-        java.util.Arrays.fill(gridRows, 0L);
+        var places = includePlaces ? DeltaTable.loadRaw(lake, "gold/h3_places/") : null;
+        // Grade: linhas por [resolucao][mes]; o indice 0 de mes nao e usado.
+        Long[][] gridRows = new Long[6][13];
+        Long[] placeRows = new Long[6];
+        for (Long[] months : gridRows) java.util.Arrays.fill(months, 0L);
         java.util.Arrays.fill(placeRows, 0L);
         for (var file : grid.files()) {
-            if (file.year() == YEAR && file.resolution() >= 0 && file.resolution() <= 6) {
+            if (file.year() == year && file.resolution() >= 0 && file.resolution() <= 5) {
+                if (file.month() < 1 || file.month() > 12) {
+                    throw new IOException("map_grid com particao month invalida: " + file.key());
+                }
                 int res = file.resolution();
-                gridRows[res] = addRows(gridRows[res], file.numRecords());
+                gridRows[res][file.month()] = addRows(gridRows[res][file.month()], file.numRecords());
             }
         }
-        for (var file : places.files()) {
+        if (includePlaces) for (var file : places.files()) {
             String value = file.partitions().get("resolution");
             if (value == null) throw new IOException("h3_places sem particao resolution no manifesto Delta");
             int res = Integer.parseInt(value);
-            if (res >= 0 && res <= 6) placeRows[res] = addRows(placeRows[res], file.numRecords());
+            if (res >= 0 && res <= 5) placeRows[res] = addRows(placeRows[res], file.numRecords());
         }
+        // Grade: um UNLOAD por (resolucao, mes). Lugares: um por resolucao, ou ate 8 partes por hash se grande.
         List<AnnualCacheExports.Request> requests = new ArrayList<>();
-        for (int res = 0; res <= 6; res++) {
-            requests.add(new AnnualCacheExports.Request("GRID", res, gridRows[res]));
-            requests.add(new AnnualCacheExports.Request("PLACES", res, placeRows[res]));
+        for (int res = 0; res <= 5; res++) {
+            for (int month = 1; month <= 12; month++) {
+                requests.add(AnnualCacheExports.Request.grid(res, month, gridRows[res][month]));
+            }
+            if (!includePlaces) continue;
+            Long placeCount = placeRows[res];
+            int parts = placeCount == null ? 0 : (int) Math.min(AnnualCacheExports.Request.MAX_PARTS,
+                    (placeCount + PLACES_ROWS_PER_PART - 1) / PLACES_ROWS_PER_PART);
+            if (parts < 2) {
+                requests.add(AnnualCacheExports.Request.places(res, placeCount));
+            } else {
+                for (int part = 1; part <= parts; part++) {
+                    requests.add(AnnualCacheExports.Request.placesPart(res, part, parts));
+                }
+            }
         }
-        var partitions = exports.export(grid.version(), places.version(), List.copyOf(requests), progress);
+        // Maiores primeiro: chegam antes na fila de importacao, que comeca durante a exportacao.
+        requests.sort(java.util.Comparator.comparing(AnnualCacheExports.Request::expectedRows,
+                java.util.Comparator.nullsFirst(java.util.Comparator.reverseOrder())));
+        long placesVersion = includePlaces ? places.version() : -1;
+        var partitions = exports.export(year, grid.version(), placesVersion, List.copyOf(requests), progress, listener);
         // Athena nao suporta time travel Delta. Uma publicacao durante o UNLOAD invalida o plano inteiro.
-        progress.accept("Conferindo versoes Delta apos exportacao Athena; publicacao PostGIS ainda pendente");
+        progress.accept("Conferindo versoes Delta apos exportacao Athena");
         var currentGrid = DeltaTable.load(lake, "gold/map_grid/");
-        var currentPlaces = DeltaTable.loadRaw(lake, "gold/h3_places/");
-        if (currentGrid.version() != grid.version() || currentPlaces.version() != places.version()) {
+        var currentPlaces = includePlaces ? DeltaTable.loadRaw(lake, "gold/h3_places/") : null;
+        if (currentGrid.version() != grid.version() || (includePlaces && currentPlaces.version() != placesVersion)) {
             throw new IOException("snapshot Delta mudou durante a exportacao Athena; tente novamente para a versao atual");
         }
-        return new Plan(grid.version(), places.version(), partitions);
+        return new Plan(grid.version(), placesVersion, partitions);
     }
 
     private static Long addRows(Long total, Long records) {
@@ -94,7 +134,8 @@ public class AnnualCacheSource {
         try (Connection connection = DriverManager.getConnection("jdbc:duckdb:");
              Statement statement = connection.createStatement()) {
             statement.execute("SET memory_limit='128MB'");
-            statement.execute("SET threads=1");
+            // Duas threads: a leitura do Parquet nao deixa o COPY esperando (eram 10,5% da espera do banco).
+            statement.execute("SET threads=2");
             String parquet = "read_parquet('" + file.toAbsolutePath().toString().replace("\\", "/")
                     .replace("'", "''") + "', hive_partitioning=false)";
             Set<String> available = new HashSet<>();

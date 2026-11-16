@@ -16,24 +16,24 @@ class BootstrapRepositoryConfigurationTest {
     private final AnnualCacheSource source = mock(AnnualCacheSource.class);
 
     @Test
-    void workerCountIsBoundedFromOneToFour() {
+    void workerCountIsBoundedFromOneToTwelve() {
         DataSource dataSource = mock(DataSource.class);
         assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(dataSource, jdbc, source, 6, 0));
-        assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(dataSource, jdbc, source, 6, 5));
+        assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(dataSource, jdbc, source, 6, 13));
         assertDoesNotThrow(() -> new BootstrapRepository(dataSource, jdbc, source, 6, 1));
-        assertDoesNotThrow(() -> new BootstrapRepository(dataSource, jdbc, source, 6, 4));
+        assertDoesNotThrow(() -> new BootstrapRepository(dataSource, jdbc, source, 6, 12));
     }
 
     @Test
-    void coordinatorAndStatusConnectionsHaveHeadroomBeyondWorkers() {
+    void coordinatorProgressAndStatusConnectionsHaveHeadroomBeyondWorkers() {
         try (var pool = new HikariDataSource()) {
-            pool.setMaximumPoolSize(4);
-            assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(pool, jdbc, source, 6, 2));
             pool.setMaximumPoolSize(5);
+            assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(pool, jdbc, source, 6, 2));
+            pool.setMaximumPoolSize(6);
             assertDoesNotThrow(() -> new BootstrapRepository(pool, jdbc, source, 6, 2));
             assertThrows(IllegalArgumentException.class, () -> new BootstrapRepository(pool, jdbc, source, 6, 4));
-            pool.setMaximumPoolSize(7);
-            assertDoesNotThrow(() -> new BootstrapRepository(pool, jdbc, source, 6, 4));
+            pool.setMaximumPoolSize(16);
+            assertDoesNotThrow(() -> new BootstrapRepository(pool, jdbc, source, 6, 12));
         }
     }
 }

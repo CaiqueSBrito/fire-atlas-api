@@ -1,152 +1,130 @@
 package com.fireatlas.gold.forecast.repository;
 
+import com.fireatlas.gold.bootstrap.repository.ForecastCacheRepository;
 import com.fireatlas.gold.forecast.entity.CellForecast;
 import com.fireatlas.gold.forecast.entity.ForecastIssue;
 import com.fireatlas.gold.forecast.entity.ForecastSummary;
 import com.fireatlas.gold.region.entity.Region;
 import com.fireatlas.gold.region.repository.TrinoFilters;
-import com.fireatlas.lake.integration.AthenaQuery;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Connection;
+import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
-/**
- * Consultas a previsao direto no data lake pelo Athena ({@code forecast}, tabela Delta registrada no Glue, mais
- * {@code h3_places} para pais e cidade): nada e materializado no PostGIS. So devolve entidades.
- * <p>
- * A tabela e particionada por {@code year} e {@code month} (derivados da emissao, unica data da tabela), entao toda
- * consulta leva a particao explicita: com a emissao em maos ela sai da propria data; na listagem de emissoes as
- * particoes existentes sao descobertas antes, num agrupamento que le so colunas de particao (metadado do Delta, sem
- * abrir arquivo de dados). A emissao mais recente e a primeira linha dessa listagem, nunca um {@code max} sobre a
- * tabela inteira.
- */
+/** Consulta exclusivamente a publicacao completa da previsao nativa, sem agregar ou recalcular celulas. */
 @Repository("goldForecastRepository")
 public class ForecastRepository {
-
-    static final String FORECAST = "forecast";
-    static final String PLACES = "h3_places";
-
-    /** A previsao vem por celula H3 de resolucao 6 (forecast.h3_r6). */
     private static final int CELL_RES = 6;
+    private static final String PUBLISHED = " FROM forecast_cache f JOIN forecast_cache_bootstrap b"
+            + " ON b.id AND f.snapshot_id=b.active_snapshot";
 
-    private final AthenaQuery athena;
+    private final JdbcTemplate jdbc;
+    private final ForecastCacheRepository bootstrap;
 
-    public ForecastRepository(AthenaQuery athena) {
-        this.athena = athena;
+    public ForecastRepository(JdbcTemplate jdbc, ForecastCacheRepository bootstrap) {
+        this.jdbc = jdbc;
+        this.bootstrap = bootstrap;
     }
 
-    /** Datas de emissao disponiveis, a mais recente primeiro. */
-    public List<ForecastIssue> findIssues() {
-        String partitions = partitionsFilter();
-        if (partitions == null) return List.of();
-        String sql = "SELECT issue_date, count(*) AS cells, count(*) FILTER (WHERE active) AS active_cells"
-                + " FROM " + FORECAST
-                + " WHERE " + partitions
-                + " GROUP BY issue_date ORDER BY issue_date DESC";
-        return athena.run(sql).stream().map(r -> new ForecastIssue(r.date("issue_date"), r.lngOr("cells", 0),
-                r.lngOr("active_cells", 0))).toList();
+    public List<ForecastIssue> findIssues() { return read(Snapshot::findIssues); }
+
+    /** Todas as consultas de uma resposta compartilham a mesma publicacao, inclusive durante um refresh. */
+    public static final class Snapshot {
+        private final JdbcTemplate transaction;
+
+        private Snapshot(JdbcTemplate transaction) { this.transaction = transaction; }
+
+        /** Datas de emissao disponiveis, a mais recente primeiro. */
+        public List<ForecastIssue> findIssues() {
+            return transaction.query(
+                    "SELECT f.issue_date, count(*) AS cells, count(*) FILTER (WHERE f.active) AS active_cells"
+                            + PUBLISHED + " GROUP BY f.issue_date ORDER BY f.issue_date DESC",
+                    (rs, index) -> new ForecastIssue(rs.getDate("issue_date").toLocalDate(), rs.getLong("cells"),
+                            rs.getLong("active_cells")));
+        }
+
+        /** Pede limit+1 para o servico sinalizar truncamento; cada linha continua uma celula nativa r6. */
+        public List<CellForecast> findForecast(Region.Cover cover, LocalDate issueDate, double minProbability,
+                                               boolean onlyActive, int limit) {
+            if (empty(cover)) return List.of();
+            String sql = "SELECT f.h3_r6, f.h3_r1, f.prob_fire_7d, f.det_24h, f.det_3d, f.det_7d, f.frp_mean_7d,"
+                    + " f.modis_brightness_mean_7d, f.viirs_brightness_mean_7d, f.ring1_det_24h, f.ring1_det_7d,"
+                    + " f.ring2_det_7d, f.active, f.country_name_pt, f.city_name, f.city_distance_km"
+                    + PUBLISHED + " WHERE f.issue_date=? AND " + region(cover) + " AND f.prob_fire_7d>=?"
+                    + (onlyActive ? " AND f.active" : "")
+                    + " ORDER BY f.prob_fire_7d DESC, f.h3_r6 LIMIT ?";
+            return transaction.query(sql, (rs, index) -> new CellForecast(rs.getLong("h3_r6"),
+                    rs.getObject("h3_r1", Long.class), rs.getObject("prob_fire_7d", Double.class),
+                    rs.getObject("det_24h", Double.class), rs.getObject("det_3d", Double.class),
+                    rs.getObject("det_7d", Double.class), rs.getObject("frp_mean_7d", Double.class),
+                    rs.getObject("modis_brightness_mean_7d", Double.class),
+                    rs.getObject("viirs_brightness_mean_7d", Double.class),
+                    rs.getObject("ring1_det_24h", Double.class), rs.getObject("ring1_det_7d", Double.class),
+                    rs.getObject("ring2_det_7d", Double.class), rs.getObject("active", Boolean.class),
+                    rs.getString("country_name_pt"), rs.getString("city_name"),
+                    rs.getObject("city_distance_km", Double.class)), Date.valueOf(issueDate), minProbability, limit + 1);
+        }
+
+        /** Totais da regiao na emissao, sem os filtros da lista. */
+        public ForecastSummary findSummary(Region.Cover cover, LocalDate issueDate) {
+            if (empty(cover)) return new ForecastSummary(0, 0, null, null);
+            return transaction.queryForObject(
+                    "SELECT count(*) AS cells, count(*) FILTER (WHERE f.active) AS active_cells,"
+                            + " max(f.prob_fire_7d) AS max_prob, avg(f.prob_fire_7d) AS mean_prob"
+                            + PUBLISHED + " WHERE f.issue_date=? AND " + region(cover),
+                    (rs, index) -> new ForecastSummary(rs.getLong("cells"), rs.getLong("active_cells"),
+                            rs.getObject("max_prob", Double.class), rs.getObject("mean_prob", Double.class)),
+                    Date.valueOf(issueDate));
+        }
     }
 
-    /**
-     * Celulas da regiao (celulas H3 de qualquer resolucao ou lugar) na emissao, da maior para a menor probabilidade,
-     * com o pais e a cidade mais proxima da celula quando h3_places os tem. Pede limit+1 para o chamador poder
-     * sinalizar truncamento.
-     */
-    public List<CellForecast> findForecast(Region.Cover cover, LocalDate issueDate, double minProbability,
-                                           boolean onlyActive, int limit) {
-        if (empty(cover)) return List.of();
-        String sql = "SELECT f.h3_r6, f.h3_r1, f.prob_fire_7d, f.det_24h, f.det_3d, f.det_7d, f.frp_mean_7d,"
-                + " f.modis_brightness_mean_7d, f.viirs_brightness_mean_7d, f.ring1_det_24h, f.ring1_det_7d,"
-                + " f.ring2_det_7d, f.active, pl.country_name_pt, pl.city_name, pl.city_distance_km"
-                + " FROM (SELECT h3_r6, h3_r1, prob_fire_7d, det_24h, det_3d, det_7d, frp_mean_7d,"
-                + " modis_brightness_mean_7d, viirs_brightness_mean_7d, ring1_det_24h, ring1_det_7d, ring2_det_7d,"
-                + " active FROM " + FORECAST
-                + " WHERE " + partition(issueDate) + " AND issue_date = " + TrinoFilters.date(issueDate)
-                + " AND " + region(cover)
-                + " AND prob_fire_7d >= " + probability(minProbability)
-                + (onlyActive ? " AND active" : "")
-                + " ORDER BY prob_fire_7d DESC, h3_r6 LIMIT " + (limit + 1) + ") f"
-                + " LEFT JOIN (SELECT h3_cell, country_name_pt, city_name, city_distance_km FROM " + PLACES
-                + " WHERE resolution = " + CELL_RES + ") pl ON pl.h3_cell = f.h3_r6"
-                + " ORDER BY f.prob_fire_7d DESC, f.h3_r6";
-        return athena.run(sql).stream().map(r -> new CellForecast(r.lngOr("h3_r6", 0), r.lng("h3_r1"),
-                r.dbl("prob_fire_7d"), r.dbl("det_24h"), r.dbl("det_3d"), r.dbl("det_7d"), r.dbl("frp_mean_7d"),
-                r.dbl("modis_brightness_mean_7d"), r.dbl("viirs_brightness_mean_7d"), r.dbl("ring1_det_24h"),
-                r.dbl("ring1_det_7d"), r.dbl("ring2_det_7d"), r.bool("active"), r.str("country_name_pt"),
-                r.str("city_name"), r.dbl("city_distance_km"))).toList();
-    }
-
-    /** Totais da regiao na emissao, sem os filtros da lista: celulas, ativas, maior e media da probabilidade. */
-    public ForecastSummary findSummary(Region.Cover cover, LocalDate issueDate) {
-        if (empty(cover)) return new ForecastSummary(0, 0, null, null);
-        String sql = "SELECT count(*) AS cells, count(*) FILTER (WHERE active) AS active_cells,"
-                + " max(prob_fire_7d) AS max_prob, avg(prob_fire_7d) AS mean_prob"
-                + " FROM " + FORECAST
-                + " WHERE " + partition(issueDate) + " AND issue_date = " + TrinoFilters.date(issueDate)
-                + " AND " + region(cover);
-        return athena.run(sql).stream().findFirst()
-                .map(r -> new ForecastSummary(r.lngOr("cells", 0), r.lngOr("active_cells", 0), r.dbl("max_prob"),
-                        r.dbl("mean_prob")))
-                .orElse(new ForecastSummary(0, 0, null, null));
-    }
-
-    /**
-     * Particoes existentes como condicao explicita ({@code year IN (...) AND month IN (...)}), ou nulo quando a
-     * tabela nao tem nenhuma emissao. O agrupamento que as descobre projeta so colunas de particao, entao o Athena
-     * responde pelo log do Delta sem ler arquivo de dados.
-     */
-    private String partitionsFilter() {
-        String sql = "SELECT year, month FROM " + FORECAST + " GROUP BY year, month ORDER BY year, month";
-        List<AthenaQuery.Row> rows = athena.run(sql);
-        if (rows.isEmpty()) return null;
-        String years = numbers(rows.stream().map(r -> r.intOr("year", 0)).toList());
-        String months = numbers(rows.stream().map(r -> r.intOr("month", 0)).toList());
-        return "year IN (" + years + ") AND month IN (" + months + ")";
-    }
-
-    /** Particao da emissao: year e month saem da propria data, a unica data da tabela. */
-    private static String partition(LocalDate issueDate) {
-        return "year = " + issueDate.getYear() + " AND month = " + issueDate.getMonthValue();
-    }
-
-    /**
-     * Celulas da regiao sobre a coluna de resolucao fixa {@code h3_r6}. Cobertura mais grossa nao vira lista de
-     * celulas filhas: compara o ancestral da celula na resolucao da cobertura, pelos mesmos bits de
-     * {@code H3Index.parentSql} (que o PostGIS usava), aqui com as funcoes de bits do Trino — assim o resultado e
-     * identico em qualquer resolucao de 0 a 6, inclusive para as coberturas por lugar.
-     */
     private static String region(Region.Cover cover) {
-        String cell = cover.res() < CELL_RES ? parentSql("h3_r6", cover.res()) : "h3_r6";
+        if (cover.res() < 0 || cover.res() > CELL_RES) throw new IllegalArgumentException("resolucao da previsao invalida");
+        String cell = cover.res() < CELL_RES ? parentSql("f.h3_r6", cover.res()) : "f.h3_r6";
         Region.Place place = cover.place();
         if (place == null) return cell + " IN (" + TrinoFilters.cells(cover.cells()) + ")";
-        return cell + " IN (SELECT pl.h3_cell FROM " + PLACES + " pl WHERE pl.resolution = " + cover.res()
+        if (cover.res() == CELL_RES) {
+            // A previsao exporta seus proprios lugares r6; a grade anual permanece estritamente r0..r5.
+            return TrinoFilters.placeCondition(place).replace("pl.", "f.");
+        }
+        return cell + " IN (SELECT pl.h3_cell FROM annual_h3_places pl WHERE pl.resolution=" + cover.res()
                 + " AND " + TrinoFilters.placeCondition(place) + ")";
     }
 
-    /**
-     * Ancestral na resolucao res de uma coluna com indice H3: digitos abaixo de res viram 7 (todos os bits em 1) e a
-     * resolucao e regravada nos bits 52-55. Mesma formula de {@code H3Index.parentBits}, com as mascaras ja
-     * calculadas em Java para o texto ficar canonico.
-     */
+    /** Mesmas mascaras H3 de parentBits: bits inferiores em 1 e resolucao nos bits 52..55. */
     private static String parentSql(String column, int res) {
         long ones = (1L << (3 * (15 - res))) - 1;
-        return "bitwise_or(bitwise_and(bitwise_or(" + column + ", " + ones + "), " + ~(15L << 52) + "), "
-                + ((long) res << 52) + ")";
+        return "(((" + column + " | " + ones + ") & " + ~(15L << 52) + ") | " + ((long) res << 52) + ")";
     }
 
-    /** Literal de probabilidade estavel (sempre o mesmo texto para o mesmo valor) e tipado como o da coluna. */
-    private static String probability(double value) {
-        return "DOUBLE '" + value + "'";
-    }
-
-    private static String numbers(List<Integer> values) {
-        return values.stream().distinct().sorted().map(String::valueOf).collect(Collectors.joining(", "));
-    }
-
-    /** Lista de celulas vazia nao vai ao data lake: nao existe linha possivel. */
     private static boolean empty(Region.Cover cover) {
         return cover.place() == null && cover.cells().isEmpty();
+    }
+
+    public <T> T read(Function<Snapshot, T> query) {
+        return jdbc.execute((ConnectionCallback<T>) connection -> {
+            int isolation = connection.getTransactionIsolation();
+            boolean autoCommit = connection.getAutoCommit();
+            connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            connection.setAutoCommit(false);
+            var transaction = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+            try {
+                // O ponteiro publicado, seus marcadores e as linhas compartilham o mesmo snapshot MVCC.
+                bootstrap.requireReady(transaction);
+                T result = query.apply(new Snapshot(transaction));
+                connection.commit();
+                return result;
+            } finally {
+                connection.rollback();
+                connection.setAutoCommit(autoCommit);
+                connection.setTransactionIsolation(isolation);
+            }
+        });
     }
 }

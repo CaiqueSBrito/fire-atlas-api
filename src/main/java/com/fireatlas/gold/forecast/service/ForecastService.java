@@ -60,22 +60,24 @@ public class ForecastService {
         if (!errors.isEmpty()) throw new InvalidParameterException(errors);
 
         Region.Cover cover = region.coverNative(RES, Region.MAX_AGG_CELLS);
-        List<ForecastIssue> issues = repository.findIssues();
-        if (issues.isEmpty()) {
-            return empty(null, null, region, "Nenhuma previsao importada (rode a importacao da forecast).");
-        }
-        LocalDate latest = issues.get(0).issueDate();
-        LocalDate used = issueDate == null ? latest : issueDate;
-        if (issues.stream().noneMatch(i -> i.issueDate().equals(used))) {
-            return empty(used, latest, region, "Nao ha previsao para a emissao " + used + "; a mais recente e "
-                    + latest + " (veja /api/v2/forecast/issues).");
-        }
-        List<CellForecast> found = repository.findForecast(cover, used, minProbability, onlyActive, limit);
-        boolean truncated = found.size() > limit;
-        List<ForecastItem> items = found.stream().limit(limit).map(mapper::toItem).toList();
-        return new ForecastResponse(used, latest, region.describe(),
-                mapper.toItem(repository.findSummary(cover, used)), items.size(), truncated, items, SOURCE, METHOD,
-                items.isEmpty() ? "Nenhuma celula da regiao atende aos filtros nesta emissao." : null);
+        return repository.read(snapshot -> {
+            List<ForecastIssue> issues = snapshot.findIssues();
+            if (issues.isEmpty()) {
+                return empty(null, null, region, "Nenhuma previsao importada (rode a importacao da forecast).");
+            }
+            LocalDate latest = issues.get(0).issueDate();
+            LocalDate used = issueDate == null ? latest : issueDate;
+            if (issues.stream().noneMatch(i -> i.issueDate().equals(used))) {
+                return empty(used, latest, region, "Nao ha previsao para a emissao " + used + "; a mais recente e "
+                        + latest + " (veja /api/v2/forecast/issues).");
+            }
+            List<CellForecast> found = snapshot.findForecast(cover, used, minProbability, onlyActive, limit);
+            boolean truncated = found.size() > limit;
+            List<ForecastItem> items = found.stream().limit(limit).map(mapper::toItem).toList();
+            return new ForecastResponse(used, latest, region.describe(),
+                    mapper.toItem(snapshot.findSummary(cover, used)), items.size(), truncated, items, SOURCE, METHOD,
+                    items.isEmpty() ? "Nenhuma celula da regiao atende aos filtros nesta emissao." : null);
+        });
     }
 
     private ForecastResponse empty(LocalDate used, LocalDate latest, Region region, String message) {

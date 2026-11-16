@@ -15,7 +15,7 @@ class BootstrapControllerTest {
     void getIsPassiveAndPostReturnsAcceptedUntilReady() throws Exception {
         var service = mock(BootstrapService.class);
         var controller = new BootstrapController(service);
-        var loading = new BootstrapStatus("loading", 2, 15, 1000, "Carga real", null);
+        var loading = new BootstrapStatus("loading", 2, 15, 1000, "Carga real", null, "importing", 0, 15);
         when(service.status()).thenReturn(loading);
         var passive = controller.status();
         assertEquals(200, passive.getStatusCode().value());
@@ -24,7 +24,7 @@ class BootstrapControllerTest {
 
         when(service.start()).thenReturn(loading);
         assertEquals(202, controller.start().getStatusCode().value());
-        var ready = new BootstrapStatus("ready", 15, 15, 26000000, "Pronto", null);
+        var ready = new BootstrapStatus("ready", 15, 15, 26000000, "Pronto", null, "ready", 15, 15);
         when(service.start()).thenReturn(ready);
         assertEquals(200, controller.start().getStatusCode().value());
 

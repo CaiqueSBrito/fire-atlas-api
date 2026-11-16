@@ -11,7 +11,8 @@ import java.util.List;
 /** Pequenos manifestos e intencoes de execucao sobrevivem a reinicios; nunca guarda linhas da gold. */
 @Component
 public class AthenaExportStore {
-    public record Key(String snapshot, String kind, int resolution) {}
+    /** month: 1..12 na grade, 0 nos lugares; part: 1..N nos lugares divididos por hash, 0 no resto. */
+    public record Key(String snapshot, String kind, int resolution, int month, int part) {}
     public record Export(Key key, String token, String prefix, String queryId, String state, List<String> files) {}
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -24,7 +25,7 @@ public class AthenaExportStore {
     public Export find(Key key) {
         var rows = jdbc.query("""
                 SELECT client_token, output_prefix, query_id, state, files::text AS files
-                FROM annual_athena_export WHERE snapshot_id=? AND kind=? AND resolution=?
+                FROM annual_athena_export WHERE snapshot_id=? AND kind=? AND resolution=? AND month=? AND part=?
                 """, (rs, row) -> {
             String files = rs.getString("files");
             try {
@@ -34,41 +35,43 @@ public class AthenaExportStore {
             } catch (IOException e) {
                 throw new java.sql.SQLException("manifesto Athena duravel invalido", e);
             }
-        }, key.snapshot(), key.kind(), key.resolution());
+        }, key.snapshot(), key.kind(), key.resolution(), key.month(), key.part());
         return rows.isEmpty() ? null : rows.getFirst();
     }
 
     /** Chamado sob o lock global do bootstrap; apenas falhas terminais recebem nova tentativa. */
     public Export begin(Key key, String token, String prefix) {
         jdbc.update("""
-                INSERT INTO annual_athena_export(snapshot_id,kind,resolution,client_token,output_prefix,state)
-                VALUES (?,?,?,?,?,'pending')
-                ON CONFLICT (snapshot_id,kind,resolution) DO UPDATE SET client_token=EXCLUDED.client_token,
+                INSERT INTO annual_athena_export(snapshot_id,kind,resolution,month,part,client_token,output_prefix,state)
+                VALUES (?,?,?,?,?,?,?,'pending')
+                ON CONFLICT (snapshot_id,kind,resolution,month,part) DO UPDATE SET client_token=EXCLUDED.client_token,
                     output_prefix=EXCLUDED.output_prefix,query_id=NULL,state='pending',manifest_location=NULL,
                     files=NULL,updated_at=now() WHERE annual_athena_export.state='failed'
-                """, key.snapshot(), key.kind(), key.resolution(), token, prefix);
+                """, key.snapshot(), key.kind(), key.resolution(), key.month(), key.part(), token, prefix);
         return find(key);
     }
 
     public void started(Export export, String queryId) {
         jdbc.update("""
                 UPDATE annual_athena_export SET query_id=?,state='running',updated_at=now()
-                WHERE snapshot_id=? AND kind=? AND resolution=? AND client_token=?
-                """, queryId, export.key().snapshot(), export.key().kind(), export.key().resolution(), export.token());
+                WHERE snapshot_id=? AND kind=? AND resolution=? AND month=? AND part=? AND client_token=?
+                """, queryId, export.key().snapshot(), export.key().kind(), export.key().resolution(),
+                export.key().month(), export.key().part(), export.token());
     }
 
     public void complete(Export export, String manifest, List<String> files) throws IOException {
         jdbc.update("""
                 UPDATE annual_athena_export SET state='complete',manifest_location=?,files=CAST(? AS jsonb),updated_at=now()
-                WHERE snapshot_id=? AND kind=? AND resolution=? AND client_token=?
+                WHERE snapshot_id=? AND kind=? AND resolution=? AND month=? AND part=? AND client_token=?
                 """, manifest, JSON.writeValueAsString(files), export.key().snapshot(), export.key().kind(),
-                export.key().resolution(), export.token());
+                export.key().resolution(), export.key().month(), export.key().part(), export.token());
     }
 
     public void failed(Export export) {
         jdbc.update("""
                 UPDATE annual_athena_export SET state='failed',updated_at=now()
-                WHERE snapshot_id=? AND kind=? AND resolution=? AND client_token=? AND state<>'complete'
-                """, export.key().snapshot(), export.key().kind(), export.key().resolution(), export.token());
+                WHERE snapshot_id=? AND kind=? AND resolution=? AND month=? AND part=? AND client_token=? AND state<>'complete'
+                """, export.key().snapshot(), export.key().kind(), export.key().resolution(), export.key().month(),
+                export.key().part(), export.token());
     }
 }

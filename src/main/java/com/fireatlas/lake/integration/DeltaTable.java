@@ -46,8 +46,8 @@ public final class DeltaTable {
     /** Estado de uma tabela qualquer: versao do log e arquivos ativos. */
     public record RawSnapshot(long version, List<RawFile> files) {}
 
-    /** Arquivo ativo da grade (particionada por resolution e year; estatistica da coluna day). */
-    public record DataFile(String key, int resolution, int year, long size, Long numRecords,
+    /** Arquivo ativo da grade (particionada por resolution, year e month; estatistica da coluna day). */
+    public record DataFile(String key, int resolution, int year, int month, long size, Long numRecords,
                            LocalDate minDay, LocalDate maxDay) {}
 
     /** Estado da grade: versao do log e arquivos ativos. */
@@ -57,18 +57,20 @@ public final class DeltaTable {
 
     private DeltaTable() {}
 
-    /** Tabela da grade (map_grid): exige as particoes resolution e year. */
+    /** Tabela da grade (map_grid): exige as particoes resolution, year e month. */
     public static Snapshot load(LakeStorage storage, String tablePath) throws IOException {
         RawSnapshot raw = loadRaw(storage, tablePath);
         List<DataFile> files = new ArrayList<>();
         for (RawFile f : raw.files()) {
             String resolution = f.partitions().get("resolution");
             String year = f.partitions().get("year");
-            if (resolution == null || year == null) {
-                throw new IOException("arquivo sem particao resolution/year no log: " + f.key());
+            String month = f.partitions().get("month");
+            if (resolution == null || year == null || month == null) {
+                throw new IOException("arquivo sem particao resolution/year/month no log (execute gold-map-repartition): "
+                        + f.key());
             }
-            files.add(new DataFile(f.key(), Integer.parseInt(resolution), Integer.parseInt(year), f.size(),
-                    f.numRecords(), f.minDate("day"), f.maxDate("day")));
+            files.add(new DataFile(f.key(), Integer.parseInt(resolution), Integer.parseInt(year),
+                    Integer.parseInt(month), f.size(), f.numRecords(), f.minDate("day"), f.maxDate("day")));
         }
         return new Snapshot(raw.version(), List.copyOf(files));
     }

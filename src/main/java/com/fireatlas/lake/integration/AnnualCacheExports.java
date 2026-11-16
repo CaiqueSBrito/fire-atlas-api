@@ -24,7 +24,65 @@ import java.util.function.Consumer;
 /** UNLOAD filtra/projeta no Athena. Somente os objetos do manifesto de sucesso podem ser importados. */
 @Component
 public class AnnualCacheExports {
-    public record Request(String kind, int resolution, Long expectedRows) {}
+    /**
+     * GRID: um mes (1..12) do ano do cache. PLACES nao tem particao temporal: month = {@link #NO_MONTH}; uma resolucao
+     * grande vira {@code parts} UNLOADs disjuntos por hash de {@code h3_cell} (part 1..parts), cada um com linhas
+     * esperadas desconhecidas. part = parts = 0: resolucao inteira.
+     */
+    public record Request(String kind, int resolution, int month, int part, int parts, Long expectedRows) {
+        public static final int NO_MONTH = 0;
+        public static final int MAX_PARTS = 8;
+
+        public Request {
+            if (resolution < 0 || resolution > 5) throw new IllegalArgumentException("resolucao invalida: " + resolution);
+            boolean grid = kind.equals("GRID");
+            if (!grid && !kind.equals("PLACES")) throw new IllegalArgumentException("tipo de exportacao invalido: " + kind);
+            if (grid ? month < 1 || month > 12 : month != NO_MONTH) {
+                throw new IllegalArgumentException("mes invalido para " + kind + ": " + month);
+            }
+            boolean whole = part == 0 && parts == 0;
+            if (!whole && (grid || parts < 2 || parts > MAX_PARTS || part < 1 || part > parts || expectedRows != null)) {
+                throw new IllegalArgumentException("parte invalida para " + kind + ": " + part + "/" + parts);
+            }
+        }
+
+        public static Request grid(int resolution, int month, Long expectedRows) {
+            return new Request("GRID", resolution, month, 0, 0, expectedRows);
+        }
+
+        public static Request places(int resolution, Long expectedRows) {
+            return new Request("PLACES", resolution, NO_MONTH, 0, 0, expectedRows);
+        }
+
+        public static Request placesPart(int resolution, int part, int parts) {
+            return new Request("PLACES", resolution, NO_MONTH, part, parts, null);
+        }
+
+        String label() {
+            return kind + " r=" + resolution + (month == NO_MONTH ? "" : " m=" + month)
+                    + (parts == 0 ? "" : " parte " + part + "/" + parts);
+        }
+
+        /** Segmento do destino S3 e do id de particao vazia: distingue meses e partes da mesma resolucao. */
+        String slice(String separator) {
+            if (month != NO_MONTH) return separator + "m=" + month;
+            return parts == 0 ? "" : separator + "p=" + part + "-" + parts;
+        }
+    }
+
+    /**
+     * Recebe o progresso da exportacao no thread de quem chamou {@link #export}: a identidade do snapshot antes do
+     * primeiro UNLOAD e as particoes de cada exportacao assim que ela termina, para a importacao comecar sem esperar
+     * as demais. Uma excecao do listener cancela a exportacao.
+     */
+    public interface Listener {
+        Listener NONE = new Listener() {};
+
+        /** Identidade do snapshot/projecao; chaves de particao deste snapshot a contem. */
+        default void snapshot(String id) {}
+
+        default void exported(List<AnnualCacheSource.Partition> partitions) {}
+    }
 
     private final ObjectProvider<AthenaQuery> athena;
     private final ObjectProvider<S3LakeStorage> storage;
@@ -35,11 +93,11 @@ public class AnnualCacheExports {
 
     public AnnualCacheExports(ObjectProvider<AthenaQuery> athena, ObjectProvider<S3LakeStorage> storage,
                               AthenaExportStore store,
-                              @Value("${fireatlas.bootstrap.export-concurrency:2}") int concurrency,
+                              @Value("${fireatlas.bootstrap.export-concurrency:12}") int concurrency,
                               @Value("${fireatlas.bootstrap.export-timeout-ms:300000}") long timeoutMs,
                               @Value("${fireatlas.bootstrap.export-prefix:}") String configuredPrefix) {
-        if (concurrency < 1 || concurrency > 4) {
-            throw new IllegalArgumentException("bootstrap.export-concurrency deve estar entre 1 e 4");
+        if (concurrency < 1 || concurrency > 12) {
+            throw new IllegalArgumentException("bootstrap.export-concurrency deve estar entre 1 e 12");
         }
         if (timeoutMs < 1) throw new IllegalArgumentException("bootstrap.export-timeout-ms deve ser positivo");
         this.athena = athena;
@@ -50,17 +108,28 @@ public class AnnualCacheExports {
         this.configuredPrefix = configuredPrefix.strip();
     }
 
-    public List<AnnualCacheSource.Partition> export(long gridVersion, long placesVersion, List<Request> requests,
+    public List<AnnualCacheSource.Partition> export(int year, long gridVersion, long placesVersion, List<Request> requests,
                                                    Consumer<String> progress) throws IOException {
+        return export(year, gridVersion, placesVersion, requests, progress, Listener.NONE);
+    }
+
+    public List<AnnualCacheSource.Partition> export(int year, long gridVersion, long placesVersion, List<Request> requests,
+                                                   Consumer<String> progress, Listener listener) throws IOException {
+        AnnualCacheSource.validateYear(year);
+        if (year != AnnualCacheSource.YEAR && requests.stream().anyMatch(r -> r.kind().equals("PLACES"))) {
+            throw new IllegalArgumentException("exportacao historica nao inclui lugares");
+        }
         var query = athena.getObject();
         var lake = storage.getObject();
         String prefix = configuredPrefix.isEmpty()
-                ? trailingSlash(query.workgroupOutputLocation()) + "bootstrap/2026/" : trailingSlash(configuredPrefix);
+                ? trailingSlash(query.workgroupOutputLocation()) + "bootstrap/" + year + "/"
+                : trailingSlash(configuredPrefix) + year + "/";
         if (!prefix.startsWith("s3://") || prefix.length() <= 6 || prefix.indexOf('/', 5) < 6
                 || prefix.contains("\n") || prefix.contains("\r")) {
             throw new IOException("BOOTSTRAP_EXPORT_PREFIX deve ser um prefixo s3://bucket/pasta/");
         }
-        String snapshot = fingerprint(lake.location("gold/"), query.sourceIdentity(), prefix, gridVersion, placesVersion);
+        String snapshot = fingerprint(year, lake.location("gold/"), query.sourceIdentity(), prefix, gridVersion, placesVersion);
+        listener.snapshot(snapshot);
         progress.accept("Athena: exportando colunas, 0/" + requests.size() + " particoes verificadas");
         var executor = Executors.newFixedThreadPool(concurrency);
         var completion = new ExecutorCompletionService<List<AnnualCacheSource.Partition>>(executor);
@@ -69,12 +138,13 @@ public class AnnualCacheExports {
         boolean succeeded = false;
         try {
             for (var request : requests) {
-                futures.add(completion.submit(() -> exportOne(query, lake, snapshot, prefix, request)));
+                futures.add(completion.submit(() -> exportOne(year, query, lake, snapshot, prefix, request)));
             }
             for (int completed = 1; completed <= requests.size(); completed++) {
-                partitions.addAll(completion.take().get());
-                progress.accept("Athena: " + completed + "/" + requests.size()
-                        + " particoes exportadas ou confirmadas vazias; publicacao PostGIS ainda pendente");
+                var exported = completion.take().get();
+                partitions.addAll(exported);
+                listener.exported(exported);
+                progress.accept("Athena: " + completed + "/" + requests.size() + " particoes exportadas ou confirmadas vazias");
             }
             succeeded = true;
         } catch (InterruptedException e) {
@@ -103,16 +173,16 @@ public class AnnualCacheExports {
         return List.copyOf(partitions);
     }
 
-    private List<AnnualCacheSource.Partition> exportOne(AthenaQuery query, S3LakeStorage lake, String snapshot,
+    private List<AnnualCacheSource.Partition> exportOne(int year, AthenaQuery query, S3LakeStorage lake, String snapshot,
                                                        String base, Request request) throws IOException {
         if (Thread.currentThread().isInterrupted()) throw new IOException("exportacao Athena interrompida");
         if (Long.valueOf(0).equals(request.expectedRows())) return List.of(empty(snapshot, request));
-        var key = new AthenaExportStore.Key(snapshot, request.kind(), request.resolution());
+        var key = new AthenaExportStore.Key(snapshot, request.kind(), request.resolution(), request.month(), request.part());
         var export = store.find(key);
         if (export == null || export.state().equals("failed")) {
             String token = UUID.randomUUID().toString();
             export = store.begin(key, token, base + snapshot + "/" + request.kind().toLowerCase(java.util.Locale.ROOT)
-                    + "/r=" + request.resolution() + "/" + token + "/");
+                    + "/r=" + request.resolution() + request.slice("/") + "/" + token + "/");
         }
         List<String> files;
         if (export.state().equals("complete")) {
@@ -121,7 +191,7 @@ public class AnnualCacheExports {
             try {
                 String id = export.queryId();
                 if (id == null) {
-                    id = query.startCommand(unloadSql(request, export.prefix()), export.token());
+                    id = query.startCommand(unloadSql(year, request, export.prefix()), export.token());
                     store.started(export, id);
                 }
                 var command = query.awaitCommand(id, timeoutMs);
@@ -145,21 +215,38 @@ public class AnnualCacheExports {
 
     private static void ensureNotMissingRows(Request request, List<String> files) throws IOException {
         if (files.isEmpty() && request.expectedRows() != null && request.expectedRows() > 0) {
-            throw new IOException("UNLOAD vazio diverge do snapshot Delta: " + request.kind() + " r=" + request.resolution());
+            throw new IOException("UNLOAD vazio diverge do snapshot Delta: " + request.label());
         }
     }
 
     private static AnnualCacheSource.Partition empty(String snapshot, Request request) {
         return new AnnualCacheSource.Partition("empty:athena:" + snapshot + ":" + request.kind() + ":"
-                + request.resolution(), request.kind(), request.resolution(), 0, 0L, true);
+                + request.resolution() + request.slice(":"), request.kind(), request.resolution(), 0, 0L, true);
     }
 
-    static String unloadSql(Request request, String prefix) {
+    /**
+     * Grade: o mes entra como intervalo de {@code day}, nunca como predicado na particao {@code month}: o Athena falha
+     * com "Failed to generate splits" em qualquer filtro sobre {@code month} da map_grid, enquanto o intervalo de dias
+     * funciona e poda arquivos pelas estatisticas min/max de {@code day} do log Delta. Mesmas linhas: month = month(day).
+     * Lugares em partes: hash xxhash64 de {@code h3_cell} (sem sinal) modulo {@code parts}; as partes sao disjuntas e
+     * somam a resolucao inteira, preservando a contagem total do snapshot Delta.
+     */
+    static String unloadSql(int year, Request request, String prefix) {
+        AnnualCacheSource.validateYear(year);
         boolean grid = request.kind().equals("GRID");
         List<String> columns = grid ? AnnualCacheSource.GRID_COLUMNS : AnnualCacheSource.PLACE_COLUMNS;
+        String period = "";
+        if (grid) {
+            var month = java.time.YearMonth.of(year, request.month());
+            period = " AND year = " + year + " AND day >= DATE '" + month.atDay(1)
+                    + "' AND day < DATE '" + month.plusMonths(1).atDay(1) + "'";
+        } else if (request.parts() > 0) {
+            period = " AND mod(bitwise_and(from_big_endian_64(xxhash64(to_big_endian_64(h3_cell))), "
+                    + Long.MAX_VALUE + "), " + request.parts() + ") = " + (request.part() - 1);
+        }
         return "UNLOAD (SELECT " + columns.stream().map(column -> "\"" + column + "\"")
                 .collect(java.util.stream.Collectors.joining(", ")) + " FROM " + (grid ? "map_grid" : "h3_places")
-                + " WHERE resolution = " + request.resolution() + (grid ? " AND year = " + AnnualCacheSource.YEAR : "")
+                + " WHERE resolution = " + request.resolution() + period
                 + ") TO '" + prefix.replace("'", "''") + "' WITH (format='PARQUET', compression='ZSTD')";
     }
 
@@ -180,7 +267,7 @@ public class AnnualCacheExports {
         return validateFiles(files, prefix);
     }
 
-    private static List<String> validateFiles(List<String> files, String prefix) throws IOException {
+    static List<String> validateFiles(List<String> files, String prefix) throws IOException {
         var seen = new HashSet<String>();
         for (String file : files) {
             if (!file.startsWith(prefix) || file.length() == prefix.length() || !seen.add(file)) {
@@ -194,9 +281,12 @@ public class AnnualCacheExports {
         return value.endsWith("/") ? value : value + "/";
     }
 
-    static String fingerprint(String lake, String context, String prefix, long grid, long places) {
-        String input = lake + "\n" + context + "\n" + prefix + "\n" + AnnualCacheSource.YEAR + "\n" + grid + "\n" + places
-                + "\n" + String.join(",", AnnualCacheSource.GRID_COLUMNS) + "\n" + String.join(",", AnnualCacheSource.PLACE_COLUMNS);
+    static String fingerprint(int year, String lake, String context, String prefix, long grid, long places) {
+        AnnualCacheSource.validateYear(year);
+        String input = lake + "\n" + context + "\n" + prefix + "\n" + year + "\n" + grid + "\n" + places
+                + "\n" + String.join(",", AnnualCacheSource.GRID_COLUMNS) + "\n" + String.join(",", AnnualCacheSource.PLACE_COLUMNS)
+                // A regra de divisao dos lugares define o SQL de cada parte: mudar a regra exige outra exportacao.
+                + "\nplaces-parts:" + AnnualCacheSource.PLACES_ROWS_PER_PART + "/" + Request.MAX_PARTS;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(input.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException e) {

@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Consultas da grade H3 diaria: 2026 usa o cache mundial duravel; os demais anos continuam no Athena.
+ * Consultas da grade H3 diaria: anos publicados usam o cache duravel; anos ainda pendentes continuam no Athena.
  * Periodos mistos sao agregados sobre a uniao completa antes de aplicar ranking, limite ou percentil.
  */
 @Repository("goldDetectionRepository")

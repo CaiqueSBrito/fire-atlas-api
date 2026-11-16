@@ -12,16 +12,14 @@ import org.springframework.stereotype.Repository;
 import java.sql.Connection;
 import java.sql.ResultSetMetaData;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/** Uma agregacao sobre o conjunto completo: cache de 2026 + linhas externas quando o periodo cruza anos. */
+/** Agrega linhas completas dos anos publicados e da fonte externa, nunca resultados previamente limitados. */
 @Repository
 public class AnnualCacheQuery {
-    private static final int YEAR = AnnualCacheSource.YEAR;
     private static final String COLUMNS = "resolution, year, " + String.join(", ", AnnualCacheSource.GRID_COLUMNS);
     private static final List<String> COLUMN_NAMES = java.util.stream.Stream.concat(
             java.util.stream.Stream.of("resolution", "year"), AnnualCacheSource.GRID_COLUMNS.stream()).toList();
@@ -46,10 +44,14 @@ public class AnnualCacheQuery {
 
     public List<AthenaQuery.Row> grid(String sql, Region.Cover cover, LocalDate start, LocalDate end,
                                      List<String> sensors) {
-        if (end.getYear() < YEAR || start.getYear() > YEAR) return athena.run(sql);
         return cached(transaction -> {
-            String relation = "annual_map_grid";
-            if (start.getYear() < YEAR || end.getYear() > YEAR) {
+            List<Integer> ready = bootstrap.readyYears(transaction).stream()
+                    .filter(year -> year >= start.getYear() && year <= end.getYear()).toList();
+            if (ready.isEmpty()) return athena.run(sql);
+            String years = years(ready);
+            String local = "SELECT " + COLUMNS + " FROM annual_map_grid WHERE year IN (" + years + ")";
+            String relation = "(" + local + ") grid";
+            if ((long) end.getYear() - start.getYear() + 1 != ready.size()) {
                 // Nunca une rankings/percentis ja limitados: todas as linhas externas entram antes da agregacao.
                 transaction.execute("CREATE TEMP TABLE annual_query_grid ON COMMIT DROP AS SELECT " + COLUMNS
                         + " FROM annual_map_grid WITH NO DATA");
@@ -57,12 +59,11 @@ public class AnnualCacheQuery {
                         .collect(Collectors.joining(", "));
                 String external = "SELECT " + COLUMNS + " FROM map_grid WHERE "
                         + TrinoFilters.where(cover, "h3_cell", start, end)
-                        + " AND year <> " + YEAR + " AND sensor IN (" + sensorFilter + ")";
+                        + " AND year NOT IN (" + years + ") AND sensor IN (" + sensorFilter + ")";
                 athena.stream(external, page -> transaction.batchUpdate(MIXED_INSERT, page, 1000, (ps, row) -> {
                     for (int i = 0; i < COLUMN_NAMES.size(); i++) ps.setString(i + 1, row.str(COLUMN_NAMES.get(i)));
                 }));
-                relation = "(SELECT " + COLUMNS + " FROM annual_map_grid UNION ALL SELECT " + COLUMNS
-                        + " FROM annual_query_grid) grid";
+                relation = "(" + local + " UNION ALL SELECT " + COLUMNS + " FROM annual_query_grid) grid";
             }
             return rows(transaction, postgres(sql, relation));
         });
@@ -72,12 +73,21 @@ public class AnnualCacheQuery {
         return cached(transaction -> rows(transaction, sql.replace("FROM h3_places", "FROM annual_h3_places")));
     }
 
-    /** Cobertura externa e pequena (uma linha por sensor), nao um download anual por visitante. */
+    /** Cobertura e aditiva por sensor: cada ano participa de exatamente uma das duas fontes. */
     public List<AthenaQuery.Row> coverage(String sql) {
-        List<AthenaQuery.Row> result = new ArrayList<>(cached(transaction -> rows(transaction,
-                sql.replace("FROM map_grid", "FROM annual_map_grid"))));
-        result.addAll(athena.run(sql.replace("WHERE resolution", "WHERE year <> " + YEAR + " AND resolution")));
-        return result;
+        return cached(transaction -> {
+            String years = years(bootstrap.readyYears(transaction));
+            List<AthenaQuery.Row> result = new java.util.ArrayList<>(rows(transaction,
+                    sql.replace("FROM map_grid", "FROM (SELECT * FROM annual_map_grid WHERE year IN ("
+                            + years + ")) grid")));
+            result.addAll(athena.run(sql.replace("WHERE resolution", "WHERE year NOT IN ("
+                    + years + ") AND resolution")));
+            return result;
+        });
+    }
+
+    private static String years(List<Integer> years) {
+        return years.stream().map(String::valueOf).collect(Collectors.joining(", "));
     }
 
     private <T> T cached(Function<JdbcTemplate, T> query) {

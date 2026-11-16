@@ -8,7 +8,7 @@ spring:
     username: ${DB_USER:fireatlas}
     password: ${DB_PASSWORD:fireatlas}
     hikari:
-      maximum-pool-size: 10
+      maximum-pool-size: 16 # carga anual: ate 12 trabalhadores + coordenador/status/requisicoes
   flyway:
     enabled: true
   jackson:
@@ -38,8 +38,8 @@ fireatlas:
     timeout-ms: ${ATHENA_TIMEOUT_MS:30000}
   bootstrap:
     refresh-hours: ${BOOTSTRAP_REFRESH_HOURS:6}
-    import-workers: ${BOOTSTRAP_IMPORT_WORKERS:2} # 1..4; cada trabalhador tem conexao e DuckDB proprios
-    export-concurrency: ${BOOTSTRAP_EXPORT_CONCURRENCY:2} # UNLOADs simultaneos, limitados
+    import-workers: ${BOOTSTRAP_IMPORT_WORKERS:2} # 1..12; cada trabalhador tem conexao e DuckDB proprios
+    export-concurrency: ${BOOTSTRAP_EXPORT_CONCURRENCY:12} # 1..12 UNLOADs simultaneos: os 12 meses de uma resolucao juntos
     export-timeout-ms: ${BOOTSTRAP_EXPORT_TIMEOUT_MS:300000}
     export-prefix: ${BOOTSTRAP_EXPORT_PREFIX:} # vazio: destino do workgroup + bootstrap/2026/
   limits:

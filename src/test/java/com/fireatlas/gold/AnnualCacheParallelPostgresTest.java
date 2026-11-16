@@ -75,9 +75,17 @@ class AnnualCacheParallelPostgresTest {
         jdbc = new JdbcTemplate(dataSource);
         new ResourceDatabasePopulator(new ClassPathResource("db/migration/V14__annual_grid_cache.sql"),
                 new ClassPathResource("db/migration/V15__annual_cache_postgis.sql"),
-                new ClassPathResource("db/migration/V16__annual_athena_exports.sql")).execute(dataSource);
+                new ClassPathResource("db/migration/V16__annual_athena_exports.sql"),
+                new ClassPathResource("db/migration/V17__annual_athena_monthly_exports.sql"),
+                new ClassPathResource("db/migration/V18__annual_cache_direct_copy.sql"),
+                new ClassPathResource("db/migration/V19__annual_athena_export_parts.sql"),
+                new ClassPathResource("db/migration/V20__annual_cache_unlogged.sql"),
+                new ClassPathResource("db/migration/V21__annual_cache_deferred_indexes.sql"),
+                new ClassPathResource("db/migration/V22__annual_cache_finalization_progress.sql"),
+                new ClassPathResource("db/migration/V23__annual_cache_historical_years.sql")).execute(dataSource);
         source = mock(AnnualCacheSource.class);
-        doAnswer(invocation -> source.plan()).when(source).plan(any());
+        doAnswer(invocation -> source.plan(invocation.getArgument(0), invocation.getArgument(1)))
+                .when(source).plan(anyInt(), anyBoolean(), any(), any());
         bootstrap = repository();
         coordinator = Executors.newSingleThreadExecutor();
     }
@@ -95,7 +103,7 @@ class AnnualCacheParallelPostgresTest {
     void distinctPartitionsUseTwoBackendConnectionsAndReadyWaitsForBothCommits() throws Exception {
         var first = partition("grid-a");
         var second = partition("grid-b");
-        when(source.plan()).thenReturn(new AnnualCacheSource.Plan(1, 1, List.of(first, second)));
+        when(source.plan(2026, true)).thenReturn(new AnnualCacheSource.Plan(1, 1, List.of(first, second)));
         CountDownLatch entered = new CountDownLatch(2);
         CountDownLatch finish = new CountDownLatch(1);
         AtomicInteger active = new AtomicInteger();
@@ -118,23 +126,22 @@ class AnnualCacheParallelPostgresTest {
             await(entered);
             assertEquals(2, active.get());
             assertEquals(2, workerBackends.size(), "cada importador deve possuir uma sessao PostgreSQL distinta");
-            assertEquals("loading", bootstrap.status().state());
-            assertEquals(0, bootstrap.status().completedUnits());
+            assertEquals("loading", bootstrap.status(2026).state());
+            assertEquals(0, bootstrap.status(2026).completedUnits());
+            // Linhas ja enviadas pelo COPY ficam invisiveis ate o commit do arquivo.
             assertEquals(0, count("annual_map_grid"));
-            assertEquals(2, count("annual_map_grid_stage"));
-            assertNull(repository().claim());
+            assertNull(repository().claim(2026));
             assertFalse(loading.isDone());
         } finally {
             finish.countDown();
         }
         loading.get(10, TimeUnit.SECONDS);
-        assertEquals("ready", bootstrap.status().state());
-        assertEquals(2, bootstrap.status().completedUnits());
-        assertEquals(2, bootstrap.status().rowsLoaded());
+        assertEquals("ready", bootstrap.status(2026).state());
+        assertEquals(2, bootstrap.status(2026).completedUnits());
+        assertEquals(2, bootstrap.status(2026).rowsLoaded());
         assertEquals(2, count("annual_grid_partition"));
         assertEquals(2, count("annual_map_grid"));
-        assertEquals(0, count("annual_map_grid_stage"));
-        verify(source, times(1)).plan(any());
+        verify(source, times(1)).plan(eq(2026), eq(true), any(), any());
         verify(source, times(1)).stream(eq(first), any());
         verify(source, times(1)).stream(eq(second), any());
     }
@@ -145,7 +152,7 @@ class AnnualCacheParallelPostgresTest {
         var failed = partition("grid-b");
         var cancelled = partition("grid-c");
         var pending = partition("grid-d");
-        when(source.plan()).thenReturn(new AnnualCacheSource.Plan(1, 1, List.of(committed, failed, cancelled, pending)));
+        when(source.plan(2026, true)).thenReturn(new AnnualCacheSource.Plan(1, 1, List.of(committed, failed, cancelled, pending)));
         CountDownLatch slowEntered = new CountDownLatch(1);
         CountDownLatch failNow = new CountDownLatch(1);
         CountDownLatch slowCancelled = new CountDownLatch(1);
@@ -176,12 +183,12 @@ class AnnualCacheParallelPostgresTest {
         try {
             // O terceiro arquivo so comeca depois de o primeiro ter publicado e fechado sua conexao.
             await(slowEntered);
-            assertEquals(1, bootstrap.status().completedUnits());
+            assertEquals(1, bootstrap.status(2026).completedUnits());
             failNow.countDown();
             await(slowCancelled);
             assertFalse(loading.isDone(), "Future cancelado nao significa writer encerrado");
-            assertNull(repository().claim(), "lock deve permanecer com coordenador durante cleanup do writer");
-            assertEquals("loading", bootstrap.status().state());
+            assertNull(repository().claim(2026), "lock deve permanecer com coordenador durante cleanup do writer");
+            assertEquals("loading", bootstrap.status(2026).state());
             assertEquals(1, count("annual_map_grid"));
             verify(source, never()).stream(eq(pending), any());
         } finally {
@@ -189,23 +196,21 @@ class AnnualCacheParallelPostgresTest {
             cleanupAllowed.countDown();
         }
         loading.get(10, TimeUnit.SECONDS);
-        assertEquals("failed", bootstrap.status().state());
-        assertEquals(1, bootstrap.status().completedUnits());
-        assertFalse(bootstrap.status().error().contains("secret-export"));
-        assertEquals(0, count("annual_map_grid_stage"));
+        assertEquals("failed", bootstrap.status(2026).state());
+        assertEquals(1, bootstrap.status(2026).completedUnits());
+        assertFalse(bootstrap.status(2026).error().contains("secret-export"));
         assertEquals(1, count("annual_map_grid"));
 
         retry.set(true);
         BootstrapRepository restarted = repository();
-        var lease = restarted.claim();
+        var lease = restarted.claim(2026);
         assertNotNull(lease);
         restarted.load(lease);
-        assertEquals("ready", restarted.status().state());
-        assertEquals(4, restarted.status().completedUnits());
-        assertEquals(4, restarted.status().rowsLoaded());
+        assertEquals("ready", restarted.status(2026).state());
+        assertEquals(4, restarted.status(2026).completedUnits());
+        assertEquals(4, restarted.status(2026).rowsLoaded());
         assertEquals(4, count("annual_grid_partition"));
         assertEquals(4, count("annual_map_grid"));
-        assertEquals(0, count("annual_map_grid_stage"));
         verify(source, times(1)).stream(eq(committed), any());
         verify(source, times(2)).stream(eq(failed), any());
         verify(source, times(2)).stream(eq(cancelled), any());
@@ -214,7 +219,7 @@ class AnnualCacheParallelPostgresTest {
 
     @Test
     void interruptedServiceShutdownJoinsEveryWriterBeforeReturningAndReleasingLock() throws Exception {
-        when(source.plan()).thenReturn(new AnnualCacheSource.Plan(1, 1,
+        when(source.plan(2026, true)).thenReturn(new AnnualCacheSource.Plan(1, 1,
                 List.of(partition("grid-a"), partition("grid-b"))));
         CountDownLatch entered = new CountDownLatch(2);
         CountDownLatch cancelled = new CountDownLatch(2);
@@ -236,7 +241,7 @@ class AnnualCacheParallelPostgresTest {
                 throw new IOException("shutdown", e);
             }
         }).when(source).stream(any(), any());
-        var service = new BootstrapService(bootstrap);
+        var service = new BootstrapService(bootstrap, mock(com.fireatlas.gold.bootstrap.service.ForecastCacheService.class));
         AtomicBoolean restoredInterrupt = new AtomicBoolean();
         Thread closing = new Thread(() -> {
             Thread.currentThread().interrupt();
@@ -249,9 +254,9 @@ class AnnualCacheParallelPostgresTest {
             closing.start();
             await(cancelled);
             assertTrue(closing.isAlive());
-            assertNull(repository().claim());
-            assertEquals("loading", bootstrap.status().state());
-            assertEquals(0, bootstrap.status().completedUnits());
+            assertNull(repository().claim(2026));
+            assertEquals("loading", bootstrap.status(2026).state());
+            assertEquals(0, bootstrap.status(2026).completedUnits());
         } finally {
             cleanupAllowed.countDown();
             if (closing.getState() != Thread.State.NEW) closing.join(10_000);
@@ -259,16 +264,15 @@ class AnnualCacheParallelPostgresTest {
         }
         assertFalse(closing.isAlive());
         assertTrue(restoredInterrupt.get());
-        assertEquals("failed", bootstrap.status().state());
-        assertEquals(0, count("annual_map_grid_stage"));
+        assertEquals("failed", bootstrap.status(2026).state());
         assertEquals(0, count("annual_map_grid"));
         assertThrows(SourceUnavailableException.class, service::start);
         retry.set(true);
-        var lease = bootstrap.claim();
+        var lease = bootstrap.claim(2026);
         assertNotNull(lease);
         bootstrap.load(lease);
-        assertEquals("ready", bootstrap.status().state());
-        assertEquals(2, bootstrap.status().completedUnits());
+        assertEquals("ready", bootstrap.status(2026).state());
+        assertEquals(2, bootstrap.status(2026).completedUnits());
     }
 
     private BootstrapRepository repository() {
@@ -276,7 +280,7 @@ class AnnualCacheParallelPostgresTest {
     }
 
     private Future<?> loadAsync() {
-        var lease = bootstrap.claim();
+        var lease = bootstrap.claim(2026);
         assertNotNull(lease);
         return coordinator.submit(() -> bootstrap.load(lease));
     }
@@ -286,7 +290,7 @@ class AnnualCacheParallelPostgresTest {
     }
 
     private static AnnualCacheSource.Partition partition(String key) {
-        return new AnnualCacheSource.Partition(key, "GRID", 6, 100, 1L, false);
+        return new AnnualCacheSource.Partition(key, "GRID", 5, 100, 1L, false);
     }
 
     private static Object[] row(String key) {
