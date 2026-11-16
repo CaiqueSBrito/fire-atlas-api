@@ -3,6 +3,7 @@ package com.fireatlas.gold.activity.controller;
 import com.fireatlas.gold.activity.dto.ActivityAnomalyResponse;
 import com.fireatlas.gold.activity.dto.ActivityAvailabilityResponse;
 import com.fireatlas.gold.activity.dto.ActivityCalendarResponse;
+import com.fireatlas.gold.activity.dto.ActivityCellsResponse;
 import com.fireatlas.gold.activity.dto.ActivityMonthlyResponse;
 import com.fireatlas.gold.activity.service.ActivityService;
 import com.fireatlas.gold.common.controller.HttpCache;
@@ -49,6 +50,25 @@ public class ActivityController {
         QueryParams q = QueryParams.of(bbox, cells, country, continent, city, cityRadiusKm, ym.atDay(1),
                 ym.atEndOfMonth(), "BOTH", 31);
         return HttpCache.ok(service.calendar(q.region(), ym), q.end());
+    }
+
+    @Operation(summary = "Mapa da atividade harmonizada: celulas H3 da regiao somadas no periodo",
+            description = "Regiao por cells, country, continent ou city; resolucao pelo zoom (0-6), como /detections. "
+                    + "Dia = dia local de fogo. Ate 366 dias.")
+    @GetMapping("/cells")
+    public ResponseEntity<ActivityCellsResponse> cells(
+            @RequestParam(required = false) String bbox,
+            @RequestParam(required = false) String cells,
+            @RequestParam(required = false) String country,
+            @RequestParam(required = false) String continent,
+            @RequestParam(required = false) String city,
+            @RequestParam(required = false) Double cityRadiusKm,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate start,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate end,
+            @RequestParam(defaultValue = "6") int zoom) {
+        if (zoom < 0 || zoom > 22) throw new InvalidParameterException("zoom", "zoom deve estar entre 0 e 22");
+        QueryParams q = QueryParams.of(bbox, cells, country, continent, city, cityRadiusKm, start, end, "BOTH", 366);
+        return HttpCache.ok(service.cells(q.region(), q.start(), q.end(), zoom), q.end());
     }
 
     @Operation(summary = "Soma mensal da atividade harmonizada na regiao",
